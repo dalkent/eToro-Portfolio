@@ -29,9 +29,4 @@ if exist etoro.env (
 :: ── Copy dashboard to Google Drive Upload folder ─────────────────────────────
 robocopy "C:\Users\Neil\ClaudeCode\eToro" "C:\Users\Neil\My Drive\Upload" *.html /njh /njs /nfl /ndl >> logs\dashboard_refresh.log 2>&1
 
-:: ── Push dashboard to GitHub Pages ────────────────────────────────────────────
-git add dashboard.html >> logs\dashboard_refresh.log 2>&1
-git commit -m "Auto-update dashboard" >> logs\dashboard_refresh.log 2>&1
-git push origin main >> logs\dashboard_refresh.log 2>&1
-
 endlocal
