@@ -21,7 +21,7 @@
   .accent-bar { height: 4px; background: linear-gradient(90deg, #c9a84c, #e8d5a3, #c9a84c); }
 
   /* Key stats */
-  .key-stats { display: grid; grid-template-columns: repeat(5, 1fr); border-bottom: 1px solid #e0e0d8; }
+  .key-stats { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid #e0e0d8; }
   .stat-cell { padding: 3px 10px; text-align: center; border-right: 1px solid #e0e0d8; }
   .stat-cell:last-child { border-right: none; }
   .stat-cell .lbl { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.8px; color: #888; margin-bottom: 3px; font-family: Arial, sans-serif; }
@@ -31,7 +31,7 @@
   .stat-cell .sub { font-size: 9px; color: #aaa; margin-top: 2px; font-family: Arial, sans-serif; }
 
   /* Body layout: 3 columns */
-  .body { display: grid; grid-template-columns: 1.15fr 1fr 0.85fr; border-top: none; overflow: hidden; }
+  .body { display: grid; grid-template-columns: 1.2fr 1fr; border-top: none; overflow: hidden; }
   .col { padding: 12px 14px; }
   .col:not(:last-child) { border-right: 1px solid #e0e0d8; }
 
@@ -148,11 +148,6 @@
       <div class="sub">Annualised</div>
     </div>
     <div class="stat-cell">
-      <div class="lbl">2-Year Volatility</div>
-      <div class="val">9.7%</div>
-      <div class="sub">Apr 2024 – Apr 2026</div>
-    </div>
-    <div class="stat-cell">
       <div class="lbl">Risk Score</div>
       <div class="val">4 / 7</div>
       <div class="sub">eToro scale</div>
@@ -167,8 +162,23 @@
   <!-- BODY: 3 COLUMNS -->
   <div class="body">
 
-    <!-- COL 1: Growth Chart + Heatmap + Risk -->
+    <!-- COL 1: Growth Chart + Heatmap + Risk + Portfolio Manager -->
     <div class="col">
+      <div class="section-title" style="margin-top:4px;">Portfolio Manager</div>
+      <div class="bio-block">
+        <div class="bio-initials">ND</div>
+        <div class="bio-text">
+          <strong>Neil Daley, PhD, CFA</strong><br>
+          20+ years in finance. CFA charterholder. Proprietary DCF, DDM &amp; EPV models covering 100+ FTSE stocks. Publishes weekly on <em>FTSE Valuation Insights</em> (Substack).
+        </div>
+      </div>
+
+      <div class="cta-box">
+        <b>Copy on eToro:</b> Search <b>Dalkent13</b> and click Copy. All trades replicate automatically.<br>
+        <b>Research:</b> dalkent13.substack.com<br>
+        <b>X / Twitter:</b> @Dalkent13
+      </div>
+
 
       <div class="section-title">Portfolio Growth vs Benchmark (Rebased to 100)</div>
       <div class="chart-legend">
@@ -231,6 +241,7 @@
       </table>
       <p class="note-text">Source: BullAware / eToro. USD returns. *2022 partial year.</p>
 
+
       <div class="section-title">Risk &amp; Downside Metrics</div>
       <div class="risk-grid">
         <div class="risk-item">
@@ -239,24 +250,9 @@
           <div class="rn">vs 4.9% risk-free</div>
         </div>
         <div class="risk-item">
-          <div class="rl">Sortino Ratio</div>
-          <div class="rv">1.69</div>
-          <div class="rn">Downside-adjusted</div>
-        </div>
-        <div class="risk-item">
           <div class="rl">VaR (95%, monthly)</div>
-          <div class="rv">-5.2%</div>
-          <div class="rn">Historical simulation</div>
-        </div>
-        <div class="risk-item">
-          <div class="rl">Max Drawdown</div>
-          <div class="rv">-20.6%</div>
-          <div class="rn">May 2023</div>
-        </div>
-        <div class="risk-item">
-          <div class="rl">2-Yr Volatility</div>
-          <div class="rv">9.7%</div>
-          <div class="rn">Annualised</div>
+          <div class="rv">5.2%</div>
+          <div class="rn">Max expected monthly loss</div>
         </div>
         <div class="risk-item">
           <div class="rl">Profitable Months</div>
@@ -264,21 +260,44 @@
           <div class="rn">31 of 44 months</div>
         </div>
         <div class="risk-item">
-          <div class="rl">eToro Risk Score</div>
-          <div class="rv">4 / 10</div>
-          <div class="rn">Conservative-moderate</div>
-        </div>
-        <div class="risk-item">
           <div class="rl">Beta vs S&amp;P 500</div>
           <div class="rv">~0.4</div>
           <div class="rn">Low market sensitivity</div>
         </div>
       </div>
+      <div class="section-title">Sector Allocation</div>
+      <div class="alloc-row"><div class="alloc-label">Consumer Defensive</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:93%"></div></div><div class="alloc-pct">28%</div></div>
+      <div class="alloc-row"><div class="alloc-label">Energy</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:53%"></div></div><div class="alloc-pct">16%</div></div>
+      <div class="alloc-row"><div class="alloc-label">Utilities</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:47%"></div></div><div class="alloc-pct">14%</div></div>
+      <div class="alloc-row"><div class="alloc-label">Financial Svcs</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:37%"></div></div><div class="alloc-pct">11%</div></div>
+      <div class="alloc-row"><div class="alloc-label">Comms Services</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:33%"></div></div><div class="alloc-pct">10%</div></div>
+      <div class="alloc-row"><div class="alloc-label">Industrials</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:27%"></div></div><div class="alloc-pct">8%</div></div>
+      <div class="alloc-row"><div class="alloc-label">Basic Materials</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:23%"></div></div><div class="alloc-pct">7%</div></div>
+      <div class="alloc-row"><div class="alloc-label">Other</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:20%"></div></div><div class="alloc-pct">6%</div></div>
+
 
     </div>
 
-    <!-- COL 2: Benchmark table + Allocations -->
+    <!-- COL 2: Philosophy + Benchmark + Allocations + Holdings -->
     <div class="col">
+
+
+
+      <div class="section-title">Investment Philosophy</div>
+      <div class="strategy-text">
+        <p>Managed using a systematic valuation framework with full skin in the game — the same approach applied to professional strategy work. Every position is backed by a three-model blend calibrated to sector characteristics.</p>
+      </div>
+
+      <div class="highlight-box">
+        <b>Valuation:</b> DCF, DDM &amp; EPV across 100+ FTSE stocks. Bought at a discount to intrinsic value, sold at fair value — never on momentum.<br>
+        <b>Signals:</b> Entry at Value Ratio ≥1.25 (&gt;25% below target). Strong Buy ≥1.50. Exit ≤1.00.<br>
+        <b>Positioning:</b> Max 5% per position. Profits locked in systematically. Assumptions: Risk-free 4.9% | ERP 5.0% | Terminal growth 2.5%.
+      </div>
+
+      <div class="highlight-box" style="background:#eef4ee; border-color:#2e7d3f;">
+        <b style="color:#2e7d3f;">Track record:</b> +129.9% since Aug 2022 vs +72.1% S&amp;P 500 and +45.8% FTSE 100. Model-driven, fully transparent — published weekly on <em>FTSE Valuation Insights</em> (Substack).
+      </div>
+
 
       <div class="section-title">Performance vs Benchmark</div>
       <table class="bench-table">
@@ -312,16 +331,6 @@
       </div>
       <p class="note-text" style="margin-top:-4px;">By current market value. Data: 16 Mar 2026.</p>
 
-      <div class="section-title">Sector Allocation</div>
-      <div class="alloc-row"><div class="alloc-label">Consumer Defensive</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:93%"></div></div><div class="alloc-pct">28%</div></div>
-      <div class="alloc-row"><div class="alloc-label">Energy</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:53%"></div></div><div class="alloc-pct">16%</div></div>
-      <div class="alloc-row"><div class="alloc-label">Utilities</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:47%"></div></div><div class="alloc-pct">14%</div></div>
-      <div class="alloc-row"><div class="alloc-label">Financial Svcs</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:37%"></div></div><div class="alloc-pct">11%</div></div>
-      <div class="alloc-row"><div class="alloc-label">Comms Services</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:33%"></div></div><div class="alloc-pct">10%</div></div>
-      <div class="alloc-row"><div class="alloc-label">Industrials</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:27%"></div></div><div class="alloc-pct">8%</div></div>
-      <div class="alloc-row"><div class="alloc-label">Basic Materials</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:23%"></div></div><div class="alloc-pct">7%</div></div>
-      <div class="alloc-row"><div class="alloc-label">Other</div><div class="alloc-bar-wrap"><div class="alloc-bar" style="width:20%"></div></div><div class="alloc-pct">6%</div></div>
-
       <div class="section-title">Top 10 Holdings</div>
       <table class="hold-table">
         <thead><tr><th>Company</th><th>Ticker</th><th>P&amp;L</th></tr></thead>
@@ -341,41 +350,6 @@
       <p class="note-text">P&amp;L from entry price. Data: 12 Apr 2026.</p>
 
     </div>
-
-    <!-- COL 3: Philosophy + Bio -->
-    <div class="col">
-
-      <div class="section-title">Investment Philosophy</div>
-      <div class="strategy-text">
-        <p>Managed using a systematic valuation framework with full skin in the game — the same approach applied to professional strategy work. Every position is backed by a three-model blend calibrated to sector characteristics.</p>
-      </div>
-
-      <div class="highlight-box">
-        <b>Valuation:</b> DCF, DDM &amp; EPV across 100+ FTSE stocks. Bought at a discount to intrinsic value, sold at fair value — never on momentum.<br>
-        <b>Signals:</b> Entry at Value Ratio ≥1.25 (&gt;25% below target). Strong Buy ≥1.50. Exit ≤1.00.<br>
-        <b>Positioning:</b> Max 5% per position. Profits locked in systematically. Assumptions: Risk-free 4.9% | ERP 5.0% | Terminal growth 2.5%.
-      </div>
-
-      <div class="highlight-box" style="background:#eef4ee; border-color:#2e7d3f;">
-        <b style="color:#2e7d3f;">Track record:</b> +129.9% since Aug 2022 vs +72.1% S&amp;P 500 and +45.8% FTSE 100. Model-driven, fully transparent — published weekly on <em>FTSE Valuation Insights</em> (Substack).
-      </div>
-
-      <div class="section-title" style="margin-top:4px;">Portfolio Manager</div>
-      <div class="bio-block">
-        <div class="bio-initials">ND</div>
-        <div class="bio-text">
-          <strong>Neil Daley, PhD, CFA</strong><br>
-          20+ years in finance. CFA charterholder. Proprietary DCF, DDM &amp; EPV models covering 100+ FTSE stocks. Publishes weekly on <em>FTSE Valuation Insights</em> (Substack).
-        </div>
-      </div>
-
-      <div class="cta-box">
-        <b>Copy on eToro:</b> Search <b>Dalkent13</b> and click Copy. All trades replicate automatically.<br>
-        <b>Research:</b> dalkent13.substack.com<br>
-        <b>X / Twitter:</b> @Dalkent13
-      </div>
-
-    </div>
   </div>
 
   <!-- DISCLAIMER + FOOTER -->
@@ -385,7 +359,7 @@
     </div>
   </div>
   <div class="footer">
-    <span>FTSE Valuation Portfolio &mdash; Neil Daley, PhD, CFA &mdash; @Dalkent13</span>
+    <span>FTSE Valuation Portfolio &mdash; Neil Daley, PhD, CFA &mdash; @Dalkent13 (est. 2022)</span>
     <span><a href="https://dalkent13.substack.com">Substack</a> &nbsp;|&nbsp; <a href="https://etoro.com/people/dalkent13">eToro</a> &nbsp;|&nbsp; <a href="https://x.com/Dalkent13">X</a> &mdash; April 2026</span>
   </div>
 
