@@ -7,7 +7,7 @@ Single command to refresh everything and regenerate the dashboard.
 Steps:
   1. sync_portfolio.py  — pulls live positions from eToro API, syncs eToro_Master.xlsx
   2. valuation.py       — fetches prices, runs DCF/DDM/EPV, updates Assumptions sheet
-  3. generate_dashboard.py — reads Excel + live prices, writes dashboard.html
+  3. generate_dashboard.py — reads Excel + live prices, writes eToro_dashboard.html
 
 Usage:
   python run_all.py            # full run (sync + valuations + dashboard)
@@ -15,7 +15,7 @@ Usage:
   python run_all.py --no-sync  # skip eToro API sync, run valuations + dashboard only
 
 Output:
-  dashboard.html — open in any browser. No server required.
+  eToro_dashboard.html — open in any browser. No server required.
 """
 
 import argparse
@@ -59,7 +59,7 @@ def main():
     parser = argparse.ArgumentParser(description="Refresh eToro dashboard")
     parser.add_argument("--dash",    action="store_true", help="Regenerate dashboard only (no API calls)")
     parser.add_argument("--no-sync", action="store_true", help="Skip eToro portfolio sync, run valuations + dashboard")
-    parser.add_argument("--open",    action="store_true", help="Open dashboard.html in browser when done")
+    parser.add_argument("--open",    action="store_true", help="Open eToro_dashboard.html in browser when done")
     args = parser.parse_args()
 
     print("=" * 56)
@@ -77,14 +77,16 @@ def main():
 
         run("Step 2/3 — Running valuations (DCF/DDM/EPV) ...", SCRIPTS / "valuation.py")
 
-    run("Step 3/3 — Generating dashboard ...", SCRIPTS / "generate_dashboard.py")
+    run("Step 3/4 — Generating dashboard ...", SCRIPTS / "generate_dashboard.py")
 
-    dashboard = BASE_DIR / "dashboard.html"
+    run("Step 4/4 — Exporting xlsx to vault + JSON cache ...", SCRIPTS / "sync_xlsx_to_vault.py")
+
+    dashboard = BASE_DIR / "dashboards" / "eToro_dashboard.html"
     if dashboard.exists():  # copy regardless of exit code — partial dashboard is better than none
-        print(f"\n  Dashboard ready → {dashboard}")
+        print(f"\n  Dashboard ready -> {dashboard}")
         # Copy to shared Upload folder regardless of whether price fetch succeeded
         import shutil
-        upload_dest = Path(r"C:\Users\Neil\My Drive\Upload\dashboard.html")
+        upload_dest = Path(r"C:\Users\Neil\My Drive\Upload\eToro_dashboard.html")
         try:
             upload_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(dashboard), str(upload_dest))
@@ -95,7 +97,20 @@ def main():
             webbrowser.open(dashboard.as_uri())
             print("  Opened in browser.")
     else:
-        print("\n  WARNING: dashboard.html not found — check for errors above")
+        print("\n  WARNING: eToro_dashboard.html not found — check for errors above")
+
+    # ── Mirror the freshly-revalued workbook to Drive so the Mac can pick it up.
+    # PC is the data master; Mac is read-only on the xlsx.
+    import shutil as _sh
+    src_xlsx = BASE_DIR / "data" / "eToro_Master.xlsx"
+    drive_xlsx = Path(r"C:\Users\Neil\My Drive\eToro Sync\eToro_Master.xlsx")
+    if src_xlsx.exists():
+        try:
+            drive_xlsx.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy2(str(src_xlsx), str(drive_xlsx))
+            print(f"  Mirrored xlsx to Drive -> {drive_xlsx}")
+        except Exception as e:
+            print(f"  WARNING: could not mirror xlsx to Drive — {e}")
 
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Done.\n")
 

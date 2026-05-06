@@ -69,6 +69,11 @@ if __name__ == "__main__":
 
     rc = run("sync_portfolio.py")
 
+    # If sync succeeded, refresh the vault markdown + JSON cache so dashboards
+    # and Obsidian see the new state without needing Excel open.
+    if rc == 0:
+        run("sync_xlsx_to_vault.py")
+
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Trade sync complete.")
 
     if rc == 0:

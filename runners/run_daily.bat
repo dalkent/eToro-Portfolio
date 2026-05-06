@@ -3,7 +3,7 @@ title eToro Daily Valuation Run
 setlocal
 
 :: ── Working directory: same folder as this bat file ──────────────────────────
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 :: ── Find Python (try Anaconda D:\, then C:\, then system PATH) ───────────────
 set PYTHON=
@@ -71,7 +71,7 @@ set DASH_CODE=%ERRORLEVEL%
 echo.
 if %DASH_CODE%==0 (
     echo ============================================================
-    echo  Dashboard generated: dashboard.html
+    echo  Dashboard generated: eToro_dashboard.html
     echo  Open in browser to view your portfolio.
     echo ============================================================
 ) else (
@@ -88,5 +88,6 @@ if %EXIT_CODE%==0 if %DASH_CODE%==0 (
 )
 
 echo.
-pause
+:: pause removed: this script runs unattended via Task Scheduler.
+:: To run interactively, call it from a cmd window where it'll hold open until the prompt.
 endlocal

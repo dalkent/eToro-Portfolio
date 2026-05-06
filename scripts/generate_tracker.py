@@ -20,6 +20,7 @@ Usage:
   python scripts/generate_tracker.py --no-fetch   (skip Yahoo Finance, use placeholder prices)
 """
 
+import os
 import sys
 import argparse
 from pathlib import Path
@@ -31,7 +32,22 @@ import openpyxl
 BASE_DIR    = Path(__file__).parent.parent
 DATA_DIR    = BASE_DIR / "data"
 MASTER      = DATA_DIR / "eToro_Master.xlsx"
-DRAFTS_DIR  = Path(__file__).parent.parent.parent / "eToro & Investing" / "Drafts"
+# Vault Drafts folder — was previously broken (resolved to a phantom path under
+# ClaudeCode\eToro & Investing\). Now points at the real Obsidian vault.
+VAULT_ROOT  = Path(os.environ.get("VAULT_ROOT", r"C:\Users\Neil\My Drive\Daley's Brain"))
+DRAFTS_DIR  = VAULT_ROOT / "Projects" / "eToro & Investing" / "Drafts"
+
+# Mirror the public-site filter from daleyvaluations-site/scripts/build_site.py
+# so signal counts in the tracker match the website exactly.
+EXCLUDED_TICKERS = {"PSH.L", "III.L"}
+
+# Share the same price cache as daleyvaluations-site so the tracker and the
+# website see IDENTICAL prices on any given run. The site's build_site.py also
+# reads/writes this file with TTL=1h. Whichever runs first does the live fetch;
+# the other consumes the cache.
+SITE_REPO        = Path(r"C:\Users\Neil\ClaudeCode\daleyvaluations-site")
+PRICE_CACHE_FILE = SITE_REPO / ".price_cache.json"
+PRICE_CACHE_TTL  = 60  # minutes — must match build_site.py's PRICE_CACHE_TTL_HOURS=1
 
 # ── Signal logic ─────────────────────────────────────────────────────────────
 
@@ -84,14 +100,25 @@ def load_master():
         if yahoo and yahoo.endswith(".L"):
             portfolio_tickers.add(yahoo)
 
-    # Tickers sheet - get Yahoo ticker for each eToro ticker
+    # Tickers sheet — yahoo ticker, Market, Sector, Asset Type per row
+    # (Market col G=index 6, Sector col H=index 7, Asset Type col I=index 8)
     ws_t = wb["Tickers"]
-    ticker_yahoo = {}
-    for row in ws_t.iter_rows(min_row=2, max_row=300, values_only=True):
+    ticker_meta: dict[str, dict] = {}
+    for row in ws_t.iter_rows(min_row=2, max_row=400, values_only=True):
         etoro = str(row[3] or "").strip()
         yahoo = str(row[5] or "").strip()
-        if etoro and yahoo:
-            ticker_yahoo[etoro] = yahoo
+        if not yahoo:
+            continue
+        meta = {
+            "market":     str(row[6] or "").strip() if len(row) > 6 else "",
+            "sector":     str(row[7] or "").strip() if len(row) > 7 else "",
+            "asset_type": str(row[8] or "").strip() if len(row) > 8 else "",
+        }
+        # Index by both yahoo and eToro ticker — Assumptions sheet uses yahoo,
+        # but be defensive in case there's a naming mismatch on a row.
+        ticker_meta[yahoo] = meta
+        if etoro and etoro != yahoo:
+            ticker_meta.setdefault(etoro, meta)
 
     # Assumptions - all FTSE valuations
     stocks = []
@@ -118,10 +145,20 @@ def load_master():
 
         in_portfolio = ticker in portfolio_tickers
 
+        # Pull Tickers-sheet metadata for the public filter
+        meta = ticker_meta.get(ticker, {})
+        market     = meta.get("market", "")
+        asset_type = meta.get("asset_type", "")
+        # Prefer the Tickers-sheet sector (Assumptions sometimes shows fin sub-sector)
+        sector_t   = meta.get("sector") or sector
+
         stocks.append({
             "ticker": ticker,
             "company": company,
             "sector": sector,
+            "sector_t": sector_t,           # Tickers-sheet sector (used by filter)
+            "market": market,
+            "asset_type": asset_type,
             "beta": beta,
             "wacc": wacc,
             "val1": val1,
@@ -142,40 +179,220 @@ def load_master():
     return stocks, gbpusd, portfolio_tickers
 
 
+# Mirror site's filter_public() — exclude tickers the public website doesn't show
+def filter_public(stocks):
+    """Return the publishable subset matching daleyvaluations.com's filter_public().
+    Six conditions, all must hold: market==FTSE, asset_type==Equity,
+    sector!='Corp Bonds', current signal populated, model!='No Valuation',
+    not in EXCLUDED_TICKERS."""
+    out = []
+    for s in stocks:
+        if s.get("market") != "FTSE":              continue
+        if s.get("asset_type") != "Equity":        continue
+        if s.get("sector_t") == "Corp Bonds":      continue
+        if not s.get("curr_signal"):               continue
+        if (s.get("model") or "").strip().lower() == "no valuation":
+            continue
+        if s.get("ticker") in EXCLUDED_TICKERS:    continue
+        out.append(s)
+    return out
+
+
+# ── Load via site's build_site.py (preferred) ───────────────────────────────
+# This guarantees the tracker's universe + filters + prices match the public
+# website exactly, since both consume the same loader/filter/price-cache.
+
+def load_via_site():
+    """Load via daleyvaluations-site/scripts/build_site.py for full consistency.
+    Returns (stocks, gbpusd, portfolio_tickers) using the same dict shape that
+    load_master returns, so the rest of the tracker code is unchanged.
+    Returns (None, None, None) if the site repo isn't available (fall back to xlsx).
+    """
+    site_scripts = SITE_REPO / "scripts"
+    if not site_scripts.exists():
+        return None, None, None
+    try:
+        sys.path.insert(0, str(site_scripts))
+        import build_site  # type: ignore
+        # Force a fresh import in case of stale module cache
+        import importlib
+        importlib.reload(build_site)
+    except Exception as e:
+        print(f"  Could not import build_site ({e}) — falling back to xlsx loader")
+        return None, None, None
+
+    print(f"  Loading via daleyvaluations-site loader for full consistency …")
+    try:
+        data = build_site.load_data(build_site.DEFAULT_DATA_FILE)
+        held = build_site.load_held_tickers(build_site.DEFAULT_PORTFOLIO_FILE)
+        all_recs = build_site.join_records(data)
+        public = build_site.filter_public(all_recs)
+        # Use the SHARED cache-aware fetch (writes the cache the site reads).
+        prices = build_site.fetch_live_prices(public, force_refresh=False)
+        public = build_site.apply_live_prices(public, prices)
+    except Exception as e:
+        print(f"  build_site loader failed ({e}) — falling back to xlsx loader")
+        return None, None, None
+
+    # Adapt site records → tracker's expected dict shape.
+    # Critically: copy the SITE's own value_ratio across so signal classification
+    # uses the exact same number the website used (no precision drift from
+    # re-rounding pence values before computing the ratio).
+    stocks = []
+    for r in public:
+        tk = r["ticker"]
+        blended_p = round(r["blended_target"] * 100, 1) if r.get("blended_target") else None
+        live_price = r.get("live_price")
+        live_price_p = round(float(live_price), 2) if live_price is not None else None
+        # Site's value_ratio comes from apply_live_prices and is the authoritative
+        # number used by the public site's signal counts.
+        site_vr = r.get("value_ratio")
+        stocks.append({
+            "ticker": tk,
+            "company": r.get("company") or "",
+            "sector": r.get("sector") or "",
+            "sector_t": r.get("sector") or "",
+            "market": r.get("market") or "",
+            "asset_type": r.get("asset_type") or "",
+            "beta": r.get("beta"),
+            "wacc": r.get("wacc"),
+            "val1": r.get("val_dcf"),
+            "val2": r.get("val_ddm"),
+            "val3": r.get("val_epv"),
+            "blended_gbp": r.get("blended_target"),
+            "blended_p": blended_p,
+            "model": r.get("model_method") or "",
+            "updated": r.get("last_updated") or "",
+            "prev_signal": r.get("prev_signal") or "",
+            "curr_signal": r.get("current_signal") or "",
+            "in_portfolio": (r.get("yahoo_ticker") or "").upper() in (held or set()),
+            "live_price_p": live_price_p,
+            # Keep both: raw (for classification) and pre-rounded (for display).
+            "value_ratio_raw": site_vr,
+            "value_ratio": round(site_vr, 3) if site_vr is not None else None,
+            "computed_signal": None,
+        })
+
+    rates = (data.get("assumptions") or {}).get("rates") or {}
+    try:
+        gbpusd = float(rates.get("GBP/USD") or 1.34)
+    except (ValueError, TypeError):
+        gbpusd = 1.34
+
+    print(f"  Loaded {len(stocks)} publishable FTSE equities via site loader (matches website universe).")
+    return stocks, gbpusd, held
+
+
 # ── Fetch live prices ────────────────────────────────────────────────────────
 
+def _read_shared_price_cache():
+    """Return {ticker: price} dict if the site's price cache is fresh, else None."""
+    if not PRICE_CACHE_FILE.exists():
+        return None
+    try:
+        import json as _json
+        cache = _json.loads(PRICE_CACHE_FILE.read_text(encoding="utf-8"))
+        cached_at = datetime.fromisoformat(cache.get("cached_at", "1970-01-01"))
+        age_min = (datetime.now() - cached_at).total_seconds() / 60
+        if age_min >= PRICE_CACHE_TTL:
+            return None
+        prices = cache.get("prices") or {}
+        if not prices:
+            return None
+        print(f"  Using shared price cache from {PRICE_CACHE_FILE.parent.name}/.price_cache.json (age: {age_min:.1f} min, {len(prices)} prices)")
+        return prices
+    except Exception as e:  # noqa: BLE001
+        print(f"  Cache read failed (non-fatal): {e}")
+        return None
+
+
+def _write_shared_price_cache(prices):
+    """Write {ticker: price} to the shared cache so the site sees the same numbers."""
+    try:
+        import json as _json
+        PRICE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PRICE_CACHE_FILE.write_text(
+            _json.dumps({"cached_at": datetime.now().isoformat(), "prices": prices}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  Cache write failed (non-fatal): {e}")
+
+
 def fetch_prices(stocks):
-    """Fetch current prices from Yahoo Finance. Populates live_price_p (in pence)."""
+    """Populate live_price_p (in pence) on each stock dict.
+    Prefers the shared price cache (same one daleyvaluations-site uses); falls
+    back to a live yfinance batch fetch if the cache is stale or missing.
+    Writes the cache after a fresh fetch so the site sees identical prices.
+    """
+    candidates = [s for s in stocks if s["blended_p"] is not None]
+
+    # 1. Try the shared cache
+    cache = _read_shared_price_cache()
+    if cache:
+        applied = 0
+        for s in candidates:
+            v = cache.get(s["ticker"])
+            if v is not None:
+                s["live_price_p"] = round(float(v), 2)
+                applied += 1
+        if applied > 0:
+            missing = len(candidates) - applied
+            print(f"  Applied {applied}/{len(candidates)} prices from shared cache " +
+                  (f"({missing} missing — will fetch individually)" if missing else ""))
+            if missing == 0:
+                return
+            # Fall through to fill in the few missing ones individually.
+
+    # 2. Live fetch (covers all tickers, or just the few missing from cache)
     try:
         import yfinance as yf
     except ImportError:
         print("Warning: yfinance not installed. Run: pip install yfinance")
         return
 
-    tickers = [s["ticker"] for s in stocks if s["blended_p"] is not None]
-    print(f"Fetching {len(tickers)} prices from Yahoo Finance ...")
-
-    for s in stocks:
-        if s["blended_p"] is None:
-            continue
+    targets = [s for s in candidates if s["live_price_p"] is None]
+    print(f"  Fetching {len(targets)} prices live from Yahoo Finance ...")
+    for s in targets:
         try:
             hist = yf.Ticker(s["ticker"]).history(period="2d")
             if not hist.empty:
-                # Yahoo returns GBp stocks in pence
                 s["live_price_p"] = round(float(hist["Close"].iloc[-1]), 2)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"  Failed to fetch {s['ticker']}: {e}")
+    fetched = sum(1 for s in candidates if s["live_price_p"] is not None)
+    print(f"  Total prices populated: {fetched}/{len(candidates)}")
 
-    fetched = sum(1 for s in stocks if s["live_price_p"] is not None)
-    print(f"  Fetched {fetched}/{len(tickers)} prices.")
+    # 3. Update the shared cache so the site reads the same numbers next run
+    if not cache and fetched > 0:
+        prices = {s["ticker"]: s["live_price_p"] for s in candidates if s["live_price_p"] is not None}
+        _write_shared_price_cache(prices)
+        print(f"  Wrote {len(prices)} prices to shared cache ({PRICE_CACHE_FILE})")
 
 
 def compute_signals(stocks):
-    """Compute value ratios and signals from live prices and blended targets."""
+    """Compute value ratios and signals from live prices and blended targets.
+
+    Three concerns matter for site-tracker consistency:
+    (1) When the record was loaded via load_via_site, prefer the SITE's exact
+        value_ratio (computed by build_site.apply_live_prices) — it uses the
+        unrounded target * 100 / pence-price and avoids precision drift.
+    (2) Classify on the RAW value ratio (not the rounded one), matching site's
+        signal_for() byte-for-byte.
+    (3) Round only for DISPLAY, never before classification.
+    """
     for s in stocks:
+        # Path 1: site already supplied a raw value_ratio — trust it
+        site_raw = s.get("value_ratio_raw")
+        if site_raw is not None:
+            s["computed_signal"] = compute_signal(site_raw)
+            s["value_ratio"]     = round(site_raw, 3)
+            continue
+        # Path 2: xlsx fallback — compute from blended_p / live_price_p
         if s["live_price_p"] and s["blended_p"] and s["live_price_p"] > 0:
-            s["value_ratio"] = round(s["blended_p"] / s["live_price_p"], 3)
-            s["computed_signal"] = compute_signal(s["value_ratio"])
+            raw_vr = s["blended_p"] / s["live_price_p"]
+            s["computed_signal"] = compute_signal(raw_vr)
+            s["value_ratio"]     = round(raw_vr, 3)
         else:
             s["computed_signal"] = s.get("curr_signal", "N/A")
 
@@ -237,7 +454,10 @@ def generate_markdown(stocks, tracker_date):
     for s in valid:
         sector_signals[s["sector"]][s["computed_signal"]] += 1
 
-    date_str = tracker_date.strftime("%-d %B %Y")
+    # Cross-platform: %-d (Linux/Mac) and %#d (Windows) both strip the leading
+    # zero, but neither works on the other OS. Format with leading zero, then
+    # lstrip it. Result: "28 April 2026", "7 May 2026".
+    date_str = tracker_date.strftime("%d %B %Y").lstrip("0")
     week_str = tracker_date.strftime("%Y-%m-%d")
 
     # ── Header ───────────────────────────────────────────────────────────
@@ -440,13 +660,26 @@ def main():
 
     tracker_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today()
 
-    stocks, gbpusd, portfolio_tickers = load_master()
-    print(f"Loaded {len(stocks)} FTSE stocks. {len(portfolio_tickers)} in portfolio. GBP/USD: {gbpusd}")
-
+    # Preferred path: load + filter + fetch via the site's own build_site.py.
+    # This guarantees the tracker's universe, signal mix, and per-ticker prices
+    # match the public website (daleyvaluations.com) exactly, byte-for-byte.
+    stocks, gbpusd, portfolio_tickers = (None, None, None)
     if not args.no_fetch:
-        fetch_prices(stocks)
-    else:
-        print("Skipping price fetch (--no-fetch).")
+        stocks, gbpusd, portfolio_tickers = load_via_site()
+        if stocks is not None:
+            print(f"Loaded {len(stocks)} FTSE stocks via site (matches daleyvaluations.com). GBP/USD: {gbpusd}")
+
+    # Fallback path: read the xlsx directly (used when --no-fetch or site repo missing).
+    if stocks is None:
+        stocks, gbpusd, portfolio_tickers = load_master()
+        print(f"Loaded {len(stocks)} FTSE stocks via xlsx fallback. {len(portfolio_tickers)} in portfolio. GBP/USD: {gbpusd}")
+        before = len(stocks)
+        stocks = filter_public(stocks)
+        print(f"  Filtered to {len(stocks)} publishable FTSE equities (dropped {before - len(stocks)})")
+        if args.no_fetch:
+            print("Skipping price fetch (--no-fetch).")
+        else:
+            fetch_prices(stocks)
 
     compute_signals(stocks)
 
@@ -459,8 +692,15 @@ def main():
     output_path.write_text(md, encoding="utf-8")
     print(f"\nTracker written to: {output_path}")
     print(f"  Signal changes: {sum(1 for s in stocks if s.get('prev_signal') and s.get('curr_signal') and s['prev_signal'] != s['curr_signal'] and s['prev_signal'] not in ('No Signal', 'N/A', ''))}")
-    print(f"  Strong Buys: {sum(1 for s in stocks if s.get('computed_signal') == 'Strong Buy')}")
-    print(f"  Strong Sells: {sum(1 for s in stocks if s.get('computed_signal') == 'Strong Sell')}")
+    # Full signal-mix breakdown — should match daleyvaluations.com exactly when
+    # loaded via load_via_site (the default path).
+    from collections import Counter as _Counter
+    mix = _Counter(s.get("computed_signal", "N/A") for s in stocks)
+    print("  Signal mix:")
+    for k in ("Strong Buy", "Buy", "Fair Value", "Sell", "Strong Sell", "N/A"):
+        if mix.get(k, 0) or k != "N/A":
+            print(f"    {k:13s}: {mix.get(k, 0)}")
+    print(f"    {'TOTAL':13s}: {sum(mix.values())}")
 
 
 if __name__ == "__main__":

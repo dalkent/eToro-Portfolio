@@ -164,6 +164,46 @@ SKIP_FALLBACK_DCF_SECTORS = {"Basic Materials"}
 # For these sectors, only EPV and primary-method DCF are used.
 SKIP_DDM_SECTORS = {"Basic Materials"}
 
+# ──────────────────────────────────────────────────────────────────────────────
+# FINANCIAL-SECTOR MODEL FIX (2026-04-30)
+# ──────────────────────────────────────────────────────────────────────────────
+# Adds an earnings-anchored secondary method to financial-sector valuations,
+# blended with the existing book-anchored method using weights driven by a
+# new Sub-Sector classification (entered on the Tickers sheet, col O).
+#
+# See: vault/Projects/eToro & Investing/Reference/
+#      Model Fix Plan - Asset-Light Specialists in Financial Sectors.md
+#      valuation.py Implementation - Financial Sector Model Fix.md
+
+# Justified P/E table keyed by (Sub-Sector, Display Sector / Fin-Subsector)
+JUSTIFIED_PE = {
+    ("Capital-heavy traditional", "Banks"):              9.0,
+    ("Mixed",                     "Banks"):             11.0,
+    ("Capital-heavy traditional", "General Insurance"): 10.0,
+    ("Mixed",                     "General Insurance"): 13.0,
+    ("Asset-light specialist",    "General Insurance"): 14.0,
+    ("Capital-heavy traditional", "Life Insurance"):    10.0,
+    ("Mixed",                     "Life Insurance"):    12.0,
+    ("Capital-heavy traditional", "Asset Management"):  10.0,
+    ("Mixed",                     "Asset Management"):  12.0,
+    ("Asset-light specialist",    "Asset Management"):  13.0,
+}
+
+# Blend weights: (book_weight, earnings_weight). Must sum to 1.0.
+SUB_SECTOR_BLEND_WEIGHTS = {
+    "Capital-heavy traditional": (0.80, 0.20),
+    "Mixed":                     (0.50, 0.50),
+    "Asset-light specialist":    (0.20, 0.80),
+    # "Closed-end vehicle" intentionally absent — stays excluded by build_site.
+}
+
+# Allowed Blend Override values for non-financial tickers (col P of Tickers sheet).
+# Replaces the site-repo blend_overrides.json quick-fix; spreadsheet is now SoT.
+BLEND_OVERRIDES = {
+    "drop_dcf", "drop_ddm", "drop_epv",
+    "dcf_only", "ddm_only", "epv_only",
+}
+
 # ── Read GBP/USD from Assumptions sheet ──────────────────────────────────────
 def read_gbp_usd(wb) -> float:
     try:
@@ -199,17 +239,40 @@ def load_tickers(wb) -> list[dict]:
         asset_t  = str(row[8] or "").strip()   # I = Asset Type
         if asset_t in SKIP_ASSET_TYPES or yf_t in SKIP_TICKERS:
             continue
+        # Cols O (14, Sub-Sector), P (15, Blend Override), Q (16, EPS Override in pence)
+        # — added 2026-04-30 by financial-sector model fix.
+        sub_sector     = str(row[14] or "").strip() if len(row) > 14 else ""
+        blend_override = str(row[15] or "").strip() if len(row) > 15 else ""
+        eps_override_p = row[16] if len(row) > 16 else None
+        if blend_override and blend_override not in BLEND_OVERRIDES:
+            log(f"  WARNING: {yf_t} has unknown Blend Override '{blend_override}' — ignored")
+            blend_override = ""
+        # Convert EPS override from pence → pounds (matches yfinance's GBP convention
+        # for diluted EPS on .L tickers). User enters pence to match annual-report convention.
+        eps_override_gbp = None
+        if eps_override_p not in (None, ""):
+            try:
+                eps_override_gbp = float(eps_override_p) / 100.0
+            except (ValueError, TypeError):
+                log(f"  WARNING: {yf_t} has non-numeric EPS Override '{eps_override_p}' — ignored")
         tickers.append({
-            "yf_ticker":    yf_t,
-            "etoro_ticker": str(row[3] or yf_t).strip(),   # D
-            "company":      str(row[1] or "").strip(),      # B
-            "sector":       str(row[7] or "").strip(),      # H
-            "market":       str(row[6] or "").strip(),      # G
-            "asset_type":   asset_t,
-            "in_portfolio": str(row[9] or "").strip(),      # J
-            "in_watchlist": str(row[10] or "").strip(),     # K
+            "yf_ticker":        yf_t,
+            "etoro_ticker":     str(row[3] or yf_t).strip(),   # D
+            "company":          str(row[1] or "").strip(),      # B
+            "sector":           str(row[7] or "").strip(),      # H
+            "market":           str(row[6] or "").strip(),      # G
+            "asset_type":       asset_t,
+            "in_portfolio":     str(row[9] or "").strip(),      # J
+            "in_watchlist":     str(row[10] or "").strip(),     # K
+            "sub_sector":       sub_sector,                     # O — financial-sector classification
+            "blend_override":   blend_override,                 # P — non-financial blend override
+            "eps_override_gbp": eps_override_gbp,                # Q — manual underlying EPS in GBP
         })
-    log(f"Loaded {len(tickers)} tickers from Tickers sheet (skipped ETF/Crypto/Cash/Bond/BTC)")
+    n_sub = sum(1 for t in tickers if t["sub_sector"])
+    n_ovr = sum(1 for t in tickers if t["blend_override"])
+    n_eps = sum(1 for t in tickers if t["eps_override_gbp"])
+    log(f"Loaded {len(tickers)} tickers (skipped ETF/Crypto/Cash/Bond/BTC) "
+        f"| {n_sub} Sub-Sector | {n_ovr} Blend Override | {n_eps} EPS Override")
     return tickers
 
 # ── FCF helper ────────────────────────────────────────────────────────────────
@@ -323,6 +386,119 @@ def get_eps_3yr_avg(stock: yf.Ticker, fallback_eps) -> float:
         return float(np.mean(vals))
     except Exception:
         return float(fallback_eps) if fallback_eps and not np.isnan(float(fallback_eps or np.nan)) else np.nan
+
+
+# ── Normalised EPS for the earnings-anchored method (fail-closed) ────────────
+def get_normalised_eps(stock: yf.Ticker, fallback_eps) -> tuple:
+    """
+    Returns (eps_norm, status) where:
+      status = "ok"          → eps_norm is a clean 3yr average
+      status = "fail:negavg" → 3yr avg is <=0 (depressed/loss-making)
+      status = "fail:depressed" → latest year < 50% of 3yr avg (mark-to-market hit)
+      status = "fail:thin"   → fewer than 2 surviving years
+      status = "fail:nodata" → no income statement
+    On any "fail:*" status, eps_norm is np.nan and the caller MUST fall back to
+    100% book-anchored valuation.
+    """
+    try:
+        inc = stock.income_stmt
+        if inc is None or inc.empty:
+            return np.nan, "fail:nodata"
+        eps_label = next(
+            (l for l in inc.index if "diluted" in l.lower() and "eps" in l.lower()), None
+        )
+        if eps_label is None:
+            eps_label = next((l for l in inc.index if "eps" in l.lower()), None)
+        if eps_label is None:
+            return np.nan, "fail:nodata"
+        vals = inc.loc[eps_label].iloc[:3].dropna()
+        # Drop negative years (one-off losses) — methodology says exclude them
+        vals_pos = vals[vals > 0]
+        if len(vals_pos) < 2:
+            return np.nan, "fail:thin"
+        eps_norm = float(np.mean(vals_pos))
+        if eps_norm <= 0:
+            return np.nan, "fail:negavg"
+        # Fail-closed if latest year is < 50% of average (depressed report)
+        latest = float(vals.iloc[0]) if len(vals) > 0 else 0.0
+        if latest > 0 and latest < 0.5 * eps_norm:
+            return np.nan, "fail:depressed"
+        return eps_norm, "ok"
+    except Exception:
+        # Last-resort: trailing EPS if positive
+        if fallback_eps and not np.isnan(float(fallback_eps or np.nan)) and float(fallback_eps) > 0:
+            return float(fallback_eps), "ok"
+        return np.nan, "fail:nodata"
+
+
+# ── Earnings-anchored valuation: eps_norm × justified P/E ────────────────────
+def val_earnings_anchored(eps_norm: float, sub_sector: str, sector: str) -> tuple:
+    """
+    Returns (value, method_label).
+    sector is the financial DISPLAY sector ('Banks' / 'General Insurance' /
+    'Life Insurance' / 'Asset Management') — NOT yfinance's broad sector.
+    """
+    if not (eps_norm and not np.isnan(eps_norm) and eps_norm > 0):
+        return np.nan, "EarnAnch:NoEPS"
+    if not sub_sector:
+        return np.nan, "EarnAnch:NoSubSector"
+    pe = JUSTIFIED_PE.get((sub_sector, sector))
+    if pe is None:
+        return np.nan, f"EarnAnch:NoPE({sub_sector[:3]}/{sector[:6]})"
+    return eps_norm * pe, f"EarnAnch:{pe:.0f}x"
+
+
+# ── Apply Sub-Sector blend (book vs earnings) ────────────────────────────────
+def apply_subsector_blend(book_target: float, earn_target: float,
+                          sub_sector: str, current_method: str) -> tuple:
+    """
+    Returns (blended_target, method_label_suffix).
+    If sub_sector is unknown or earn_target is NaN, falls back to 100% book.
+    """
+    if not sub_sector or sub_sector == "Closed-end vehicle":
+        return book_target, current_method
+    weights = SUB_SECTOR_BLEND_WEIGHTS.get(sub_sector)
+    if weights is None:
+        return book_target, current_method
+    bw, ew = weights
+    if (earn_target is None or (isinstance(earn_target, float) and np.isnan(earn_target))
+            or earn_target <= 0):
+        # Fail-closed: 100% book + flag
+        flag = "EA:Unreliable" if sub_sector == "Asset-light specialist" else "EA:NoEPS"
+        return book_target, f"{current_method}+{flag}"
+    if book_target is None or (isinstance(book_target, float) and np.isnan(book_target)):
+        # Book missing — use 100% earnings (rare path)
+        return earn_target, f"{current_method}+EA:Only"
+    blended = bw * book_target + ew * earn_target
+    return blended, f"{current_method}+EA({bw:.0%}/{ew:.0%})"
+
+
+# ── Apply Blend Override (replaces site-repo blend_overrides.json) ────────────
+def apply_blend_override(target: float, override: str,
+                          dcf_v, ddm_v, epv_v,
+                          current_method: str) -> tuple:
+    """
+    Returns (overridden_target, method_label_suffix).
+    Used for non-financial tickers where the spreadsheet's Blend Override col
+    forces a specific subset of the three Vals.
+    """
+    if not override:
+        return target, current_method
+    def _clean(v):
+        return v if (v is not None and not (isinstance(v, float) and np.isnan(v)) and v > 0) else None
+    dcf_v = _clean(dcf_v); ddm_v = _clean(ddm_v); epv_v = _clean(epv_v)
+    cands_map = {
+        "drop_dcf":  [v for v in (ddm_v, epv_v) if v is not None],
+        "drop_ddm":  [v for v in (dcf_v, epv_v) if v is not None],
+        "drop_epv":  [v for v in (dcf_v, ddm_v) if v is not None],
+        "dcf_only":  [dcf_v] if dcf_v is not None else [],
+        "ddm_only":  [ddm_v] if ddm_v is not None else [],
+        "epv_only":  [epv_v] if epv_v is not None else [],
+    }
+    cands = cands_map.get(override, [])
+    if not cands:
+        return target, f"{current_method}+Override:{override}:NoData"
+    return float(np.mean(cands)), f"{current_method}+Override:{override}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FINANCIAL SECTOR VALUATION MODELS
@@ -563,8 +739,23 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
     # ── Fetch 3-year average EPS (used by financial models) ───────────────────
     if fin_subsector:
         eps3 = get_eps_3yr_avg(stock, trail_eps)
+        # Normalised EPS for the earnings-anchored secondary method (2026-04-30 fix).
+        # Fail-closed: negative or depressed inputs return np.nan with a status code.
+        eps_norm, eps_norm_status = get_normalised_eps(stock, trail_eps)
+        # Manual override beats yfinance — for cases where reported EPS is structurally
+        # below underlying (mark-to-market, demergers, etc.). Entered in pence on the
+        # Tickers sheet col Q; load_tickers() already converted to GBP.
+        eps_override_gbp = row.get("eps_override_gbp")
+        if eps_override_gbp and eps_override_gbp > 0:
+            eps_norm = float(eps_override_gbp)
+            eps_norm_status = "ok:override"
     else:
         eps3 = np.nan
+        eps_norm, eps_norm_status = np.nan, "skip:not-financial"
+    # Pre-init the GBP-converted normalised EPS — set inside financial branch but
+    # referenced by the return-dict block at the bottom of value_ticker, so
+    # ensure it's always defined.
+    en_gbp = np.nan
 
     analyst_target_raw = info.get("targetMeanPrice")
 
@@ -580,13 +771,15 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
         # analyst target is in the same currency as currentPrice → convert to GBP
         analyst_target = round(_to_gbp(analyst_target_raw), 4) if analyst_target_raw else None
 
-        # Convert book_value / eps3 if company reports in USD
+        # Convert book_value / eps3 / eps_norm if company reports in USD
         if financial_currency == "USD":
-            bv_gbp  = (book_value / gbp_usd) if book_value else None
-            e3_gbp  = (eps3 / gbp_usd)       if eps3 and not np.isnan(eps3) else np.nan
+            bv_gbp     = (book_value / gbp_usd) if book_value else None
+            e3_gbp     = (eps3 / gbp_usd)       if eps3 and not np.isnan(eps3) else np.nan
+            en_gbp     = (eps_norm / gbp_usd)   if eps_norm and not np.isnan(eps_norm) else np.nan
         else:
-            bv_gbp  = book_value
-            e3_gbp  = eps3
+            bv_gbp     = book_value
+            e3_gbp     = eps3
+            en_gbp     = eps_norm
 
         # ── Route to sub-sector model ──────────────────────────────────────
         dcf_out = None   # financial stocks don't use DCF
@@ -643,6 +836,18 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
             )
             ddm_out = round(float(ddm_val), 4) if ddm_val and not np.isnan(ddm_val) and ddm_val > 0 else None
             epv_out = round(float(epv_val), 4) if epv_val and not np.isnan(epv_val) and epv_val > 0 else None
+
+        # ── Earnings-anchored secondary method (2026-04-30 fix) ────────────────
+        # The Sub-Sector classification on the Tickers sheet drives a per-stock
+        # blend between the existing book-anchored target and a justified-P/E
+        # × normalised-EPS target. Closed-end vehicles are skipped.
+        sub = row.get("sub_sector", "")
+        val4_target, val4_label = val_earnings_anchored(en_gbp, sub, fin_subsector)
+        if sub and sub != "Closed-end vehicle":
+            target, fcf_method = apply_subsector_blend(target, val4_target, sub, fcf_method)
+            if eps_norm_status != "ok":
+                fcf_method = f"{fcf_method}[{eps_norm_status}]"
+        # else: Sub-Sector blank or Closed-end vehicle → leave target as-is
 
         # Fallback to analyst consensus if model returned nothing
         if target is None or (isinstance(target, float) and np.isnan(target)):
@@ -734,6 +939,14 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
                 target = np.nan
                 fcf_method = "No Valuation"
 
+            # ── Apply Blend Override from Tickers!P (2026-04-30 fix) ──────────
+            # Replaces site-repo blend_overrides.json. Spreadsheet is now SoT.
+            override = row.get("blend_override", "")
+            if override and target is not None and not np.isnan(target):
+                target, fcf_method = apply_blend_override(
+                    target, override, dcf_val_gbp, ddm_val, epv_val, fcf_method
+                )
+
             def clean_gbp(v):
                 return round(float(v), 4) if v is not None and not np.isnan(v) and v > 0 else None
 
@@ -758,6 +971,13 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
             else:
                 target = np.nan
                 fcf_method = "No Valuation"
+
+            # Apply Blend Override (rare for non-FTSE but symmetric with FTSE branch)
+            override = row.get("blend_override", "")
+            if override and target is not None and not np.isnan(target):
+                target, fcf_method = apply_blend_override(
+                    target, override, dcf_val, ddm_val, epv_val, fcf_method
+                )
 
             def clean(v):
                 return round(v, 4) if not np.isnan(v) and v > 0 else None
@@ -793,12 +1013,30 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
 
     log(f"  {yf_t:<12} [{subsector_label or 'Standard':<20}] price={price_out}  target={tgt_out}  ratio={value_ratio}  → {signal}")
 
+    # Compute Val 4 + sub-sector for the return dict (only meaningful for
+    # financial-sector tickers; blank/None for everything else).
+    val4_out = None
+    sub_sector_label = row.get("sub_sector", "")
+    if is_ftse and fin_subsector and sub_sector_label and sub_sector_label != "Closed-end vehicle":
+        try:
+            v4, _ = val_earnings_anchored(en_gbp, sub_sector_label, fin_subsector)
+            if v4 and not np.isnan(v4) and v4 > 0:
+                val4_out = round(float(v4), 4)
+        except Exception:
+            val4_out = None
+    norm_eps_out = (round(float(en_gbp), 4) if (is_ftse and fin_subsector
+                    and en_gbp is not None and not np.isnan(en_gbp) and en_gbp > 0) else None)
+
     return {
         "Ticker":        yf_t,
         "etoro_ticker":  row["etoro_ticker"],
         "Name":          company,
         "Sector":        sector,
         "Fin_Subsector": subsector_label,
+        "Sub_Sector":    sub_sector_label,            # Tickers!O — financial classification
+        "Normalised_EPS": norm_eps_out,                # GBP per share
+        "Val4_EarnAnch": val4_out,                     # eps_norm × justified P/E
+        "Blend_Override": row.get("blend_override", ""),
         "Beta":          round(info.get("beta"), 3) if info.get("beta") else None,
         "WACC":          f"{wacc*100:.2f}%",
         "Ke":            f"{ke*100:.2f}%",
@@ -906,6 +1144,21 @@ def update_assumptions(wb, results: list[dict]):
             c = ws.cell(row=row_num, column=17, value=signal)
             c.font  = UPDATED_GREEN
             c.alignment = CENTER
+
+        # ── Step 3: Write financial-sector model-fix columns (R, S, T) ──
+        # 2026-04-30 — added by the financial-sector model fix.
+        sub_sector = r.get("Sub_Sector", "")
+        if sub_sector:
+            c = ws.cell(row=row_num, column=18, value=sub_sector)
+            c.font = INPUT_BLUE; c.alignment = CENTER
+        norm_eps = r.get("Normalised_EPS")
+        if norm_eps is not None:
+            c = ws.cell(row=row_num, column=19, value=norm_eps)
+            c.font = INPUT_BLUE; c.number_format = "£#,##0.0000"
+        val4 = r.get("Val4_EarnAnch")
+        if val4 is not None:
+            c = ws.cell(row=row_num, column=20, value=val4)
+            c.font = INPUT_BLUE; c.number_format = "£#,##0.00"
 
         updated += 1
 

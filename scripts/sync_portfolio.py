@@ -34,6 +34,10 @@ import yfinance as yf
 from datetime import datetime
 from pathlib import Path
 
+# Load etoro.env from project root before reading os.getenv anywhere below.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _envloader  # noqa: F401  (side-effect import: populates os.environ)
+
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, numbers
 
@@ -61,12 +65,23 @@ def etoro_headers():
     }
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+# Reconfigure stdout as UTF-8 so '→' etc. don't crash on Windows cp1252 consoles.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, OSError):
+    pass
+
+
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
-    print(line)
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        # Last-resort: strip chars the console can't represent.
+        print(line.encode("ascii", errors="replace").decode("ascii"))
 
 # ── Styling helpers ───────────────────────────────────────────────────────────
 INPUT_BLUE  = Font(color="FF0000FF", name="Arial", size=10)
@@ -442,9 +457,83 @@ def run_sync():
     ws_w  = wb["Watchlist"]
     ws_t  = wb["Tickers"]
 
+    # ── 2a. Pre-clean: fix any ID_NNNN orphan rows left in the Watchlist by
+    #         previous runs. Resolve them via the Tickers sheet, delete if held
+    #         in Portfolio, otherwise rename in place.
+    try:
+        from fix_watchlist_orphans import fix_watchlist_orphans
+        result = fix_watchlist_orphans(wb, log=log)
+        # Newer signature: (deleted, renamed, unresolved). Older: (deleted, renamed).
+        if len(result) == 3:
+            wl_deleted, wl_renamed, wl_unresolved = result
+        else:
+            wl_deleted, wl_renamed = result
+            wl_unresolved = 0
+        if wl_deleted or wl_renamed:
+            log(f"  Watchlist hygiene: deleted {wl_deleted}, renamed {wl_renamed}, unresolved {wl_unresolved}")
+    except Exception as e:
+        log(f"  Warning: watchlist orphan fixer failed: {e}")
+
+    # ── 2a-bis. Dedupe Tickers sheet. Duplicate rows for the same eToro Ticker
+    #            (a known historic mess) cause the Watchlist's MATCH lookups to
+    #            land on the broken/incomplete duplicate, blanking live prices.
+    try:
+        from audit_tickers_sheet import dedupe_tickers
+        t_deleted, t_merged = dedupe_tickers(wb, log=log)
+        if t_deleted or t_merged:
+            log(f"  Tickers hygiene: deleted {t_deleted} duplicate row(s), merged {t_merged}")
+    except Exception as e:
+        log(f"  Warning: Tickers dedupe failed: {e}")
+
     # ── 2b. Resolve any unmatched "ID_XXXX" tickers via Tickers sheet ────────
     _resolve_id_tickers(etoro_positions, ws_t)
     etoro_tickers = set(etoro_positions.keys())   # refresh after resolution
+
+    # ── 2c. Guardrail: refuse to proceed if any ID_NNNN remain unresolved ────
+    # Adding ID_NNNN-keyed rows causes cascading damage on subsequent runs
+    # (they get misinterpreted as "sold" once the CSV mapping is added).
+    unresolved = [t for t in etoro_tickers if t.startswith("ID_")]
+    if unresolved:
+        log("")
+        log("=" * 60)
+        log("STOP: new holdings have no ticker mapping")
+        log("=" * 60)
+        # Try to look up symbols from eToro's public metadata endpoint
+        id_to_symbol = {}
+        try:
+            ids_csv = ",".join(t[3:] for t in unresolved)
+            meta_url = f"https://api.etorostatic.com/sapi/instrumentsmetadata/V1.1/instruments?cv={ids_csv}"
+            r = requests.get(meta_url, timeout=15)
+            if r.ok:
+                targets = {int(t[3:]) for t in unresolved}
+                for item in r.json().get("InstrumentDisplayDatas", []):
+                    if item.get("InstrumentID") in targets:
+                        id_to_symbol[item["InstrumentID"]] = (
+                            item.get("SymbolFull", "?"),
+                            item.get("InstrumentDisplayName", "?"),
+                        )
+        except Exception as e:
+            log(f"  (metadata lookup failed: {e})")
+
+        log(f"Unresolved eToro IDs ({len(unresolved)}):")
+        for t in unresolved:
+            aid = int(t[3:])
+            sym, name = id_to_symbol.get(aid, ("?", "? (lookup failed)"))
+            log(f"  ID {aid:<6}  →  {sym:<8}  {name}")
+
+        log("")
+        log("Add a row to data/etoro_portfolio_tickermatch.csv for each ID, e.g.:")
+        for t in unresolved:
+            aid = int(t[3:])
+            sym, _ = id_to_symbol.get(aid, ("TICKER", ""))
+            log(f"  {aid},ID {aid},{sym},NASDQ,AI")
+        log("")
+        log("Columns: Asset_ID,Ticker_ID,Real_Ticker,Market,Asset_Type")
+        log("  Market:     FTSE | NYSE | NASDQ | INT")
+        log("  Asset_Type: UK Equity | International Equity | AI | Corp Bonds | Crypto")
+        log("")
+        log("Then re-run this script. Workbook NOT modified.")
+        sys.exit(2)
 
     # ── 3. Read current Portfolio sheet ──────────────────────────────────────
     current_portfolio = read_portfolio_sheet(ws_p)
@@ -594,7 +683,13 @@ def run_sync():
         old_units  = pos["units"] or 0
         new_units  = etoro_data.get("units", old_units)
 
-        # Only update if eToro shows meaningfully different invested amount
+        # Update units whenever they differ (catches top-ups, fractional re-entries,
+        # dividend reinvestment, anything that changes unit count without a sell).
+        if abs(round(new_units, 6) - round(old_units, 6)) > 0.0001:
+            ws_p.cell(row=pos["row_num"], column=9, value=round(new_units, 6))
+            log(f"  Updated {ticker} units: {old_units} → {round(new_units, 6)}")
+
+        # Update invested when it differs by more than 1% of the existing value.
         new_invested = etoro_data.get("invested_usd")
         if new_invested and abs((new_invested - (pos["invested"] or 0)) / max(pos["invested"] or 1, 1)) > 0.01:
             ws_p.cell(row=pos["row_num"], column=11, value=round(new_invested, 2))
@@ -789,8 +884,16 @@ def _add_to_portfolio(ws_p, ws_t, ticker: str, etoro_data: dict):
         if fmt: c.number_format = fmt
 
     # Write formulas (weight formula uses dynamically computed GRAND TOTAL row)
+    # NOTE: col 12 (Live Price Local) uses indirection through Tickers!M to get the
+    # exchange-prefixed symbol (XNAS:HOOD, XNYS:VZ, XLON:KGF). Bare-ticker
+    # STOCKHISTORY only works for tickers Excel can identify on its own (.L).
     formulas = {
-        12: f'=IFERROR(INDEX(stockhistory("{yf_ticker}",TODAY()-7,TODAY(),0,0),1,2),"N/A")',
+        12: (
+            f'=IFERROR(INDEX(_xlfn.STOCKHISTORY('
+            f'INDEX(Tickers!$M:$M,MATCH(D{r},Tickers!$D:$D,0)),'
+            f'TODAY()-7,TODAY(),0,0),1,2),'
+            f'IFERROR(INDEX(Tickers!$N:$N,MATCH(D{r},Tickers!$D:$D,0)),""))'
+        ),
         13: f'=IFERROR(IF(F{r}="GBp",L{r}/100,L{r}),"N/A")',
         14: f'=IFERROR(IF(F{r}="GBp",I{r}*L{r}/100*Assumptions!$B$3,I{r}*M{r}),"N/A")',
         15: f'=IFERROR(N{r}/$N${gt_row_after},0)',

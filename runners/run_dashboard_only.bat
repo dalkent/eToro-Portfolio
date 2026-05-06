@@ -2,7 +2,7 @@
 title eToro Dashboard Refresh
 setlocal
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 :: ── Find Python ───────────────────────────────────────────────────────────────
 set PYTHON=

@@ -1,8 +1,8 @@
 @echo off
-title eToro Hourly Refresh
+title eToro Daily Briefing
 setlocal
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 :: ── Find Python ───────────────────────────────────────────────────────────────
 set PYTHON=
@@ -24,35 +24,21 @@ if exist etoro.env (
 )
 
 :: ── Redirect all output to log ────────────────────────────────────────────────
-set LOG=logs\hourly_refresh_run.log
+set LOG=logs\briefing_run.log
 echo. >> %LOG%
 echo ============================================================ >> %LOG%
-echo  eToro Hourly Refresh  [%date% %time%] >> %LOG%
+echo  eToro Daily Briefing  [%date% %time%] >> %LOG%
 echo ============================================================ >> %LOG%
 
-:: ── 1. Valuations (run_daily.py) ──────────────────────────────────────────────
-echo Running run_daily.py ... >> %LOG%
-"%PYTHON%" run_daily.py >> %LOG% 2>&1
-set RC1=%ERRORLEVEL%
-if %RC1%==0 (
-    echo run_daily.py OK >> %LOG%
+:: ── Run tracker ───────────────────────────────────────────────────────────────
+echo Running run_tracker.py ... >> %LOG%
+"%PYTHON%" run_tracker.py >> %LOG% 2>&1
+set RC=%ERRORLEVEL%
+
+if %RC%==0 (
+    echo Daily briefing COMPLETE [%date% %time%] >> %LOG%
 ) else (
-    echo WARNING: run_daily.py exited %RC1% >> %LOG%
+    echo WARNING: run_tracker.py exited %RC% [%date% %time%] >> %LOG%
 )
 
-:: ── 2. Portfolio sync (sync_portfolio.py) — only if API keys present ──────────
-if defined ETORO_PUBLIC_API_KEY (
-    if defined ETORO_USER_KEY (
-        echo Running sync_portfolio.py ... >> %LOG%
-        "%PYTHON%" scripts\sync_portfolio.py >> %LOG% 2>&1
-        set RC2=%ERRORLEVEL%
-        if %RC2%==0 (
-            echo sync_portfolio.py OK >> %LOG%
-        ) else (
-            echo WARNING: sync_portfolio.py exited %RC2% >> %LOG%
-        )
-    )
-)
-
-echo Hourly refresh complete [%date% %time%] >> %LOG%
 endlocal

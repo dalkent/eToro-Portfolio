@@ -38,7 +38,12 @@ def load_env(path: Path):
 
 def run(script: str):
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Running: {script}")
-    result = subprocess.run([PYTHON, str(BASE_DIR / "scripts" / script)], env=os.environ)
+    # On Windows, suppress the child's cmd window when this script is invoked
+    # from a hidden VBS / Task Scheduler context. CREATE_NO_WINDOW = 0x08000000.
+    kwargs = {"env": os.environ}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    result = subprocess.run([PYTHON, str(BASE_DIR / "scripts" / script)], **kwargs)
     if result.returncode != 0:
         print(f"WARNING: {script} exited with code {result.returncode}")
 
