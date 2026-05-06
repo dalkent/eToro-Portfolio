@@ -38,9 +38,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from paths import UPLOAD_DIR
+
 BASE_DIR     = Path(__file__).parent.parent
 DASHBOARDS   = BASE_DIR / "dashboards"
-UPLOAD_DIR   = Path(r"C:\Users\Neil\My Drive\Upload")
 DATA_DIR     = BASE_DIR / "data"
 
 # Make run_news_server importable (it sits at the repo root)

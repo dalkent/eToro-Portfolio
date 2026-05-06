@@ -21,9 +21,10 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from paths import VAULT_DIR as DEFAULT_VAULT
+
 BASE = Path(__file__).parent.parent
 DATA_DIR = BASE / "data"
-DEFAULT_VAULT = Path(r"C:\Users\Neil\My Drive\Daley's Brain")
 
 
 def _load_env():
