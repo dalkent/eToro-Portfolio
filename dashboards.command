@@ -78,6 +78,21 @@ python scripts/generate_dashboard.py || echo "  WARNING: eToro dashboard regen f
 echo; echo "[9/9] Build standalone dashboards + copy ALL to Drive Upload ..."
 python scripts/build_static_dashboards.py || echo "  WARNING: static build failed"
 
+echo; echo "[9b/9] Rewriting nav links in local dashboards/ (Mac-only) ..."
+python -c '
+import sys, pathlib
+sys.path.insert(0, "scripts")
+from build_static_dashboards import rewrite_nav_links
+n = 0
+for p in sorted(pathlib.Path("dashboards").glob("*.html")):
+    src = p.read_text(encoding="utf-8")
+    out = rewrite_nav_links(src)
+    if out != src:
+        p.write_text(out, encoding="utf-8")
+        n += 1
+print(f"  rewrote {n} files in dashboards/")
+' || echo "  WARNING: local nav rewrite failed"
+
 echo
 echo "============================================================"
 echo "  dashboards.command - DONE"
