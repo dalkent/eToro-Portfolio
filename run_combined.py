@@ -31,8 +31,11 @@ BASE_DIR = Path(__file__).parent
 SCRIPTS  = BASE_DIR / "scripts"
 PYTHON   = sys.executable
 
+sys.path.insert(0, str(SCRIPTS))
+from paths import UPLOAD_DIR
+
 ENV_FILES = [BASE_DIR / "etoro.env", BASE_DIR / "t212.env"]
-UPLOAD_DEST = Path(r"C:\Users\Neil\My Drive\Upload\t212_dashboard.html")
+UPLOAD_DEST = UPLOAD_DIR / "t212_dashboard.html"
 
 
 def load_env(path: Path):

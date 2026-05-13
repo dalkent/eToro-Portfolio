@@ -31,6 +31,9 @@ ENV_FILE = BASE_DIR / "etoro.env"
 SCRIPTS  = BASE_DIR / "scripts"
 PYTHON   = sys.executable
 
+sys.path.insert(0, str(SCRIPTS))
+from paths import UPLOAD_DIR, SYNC_DIR
+
 
 def load_env(path: Path):
     if not path.exists():
@@ -86,7 +89,7 @@ def main():
         print(f"\n  Dashboard ready -> {dashboard}")
         # Copy to shared Upload folder regardless of whether price fetch succeeded
         import shutil
-        upload_dest = Path(r"C:\Users\Neil\My Drive\Upload\eToro_dashboard.html")
+        upload_dest = UPLOAD_DIR / "eToro_dashboard.html"
         try:
             upload_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(dashboard), str(upload_dest))
@@ -103,7 +106,7 @@ def main():
     # PC is the data master; Mac is read-only on the xlsx.
     import shutil as _sh
     src_xlsx = BASE_DIR / "data" / "eToro_Master.xlsx"
-    drive_xlsx = Path(r"C:\Users\Neil\My Drive\eToro Sync\eToro_Master.xlsx")
+    drive_xlsx = SYNC_DIR / "eToro_Master.xlsx"
     if src_xlsx.exists():
         try:
             drive_xlsx.parent.mkdir(parents=True, exist_ok=True)

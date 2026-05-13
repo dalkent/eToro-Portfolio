@@ -27,9 +27,12 @@ BASE_DIR = Path(__file__).parent
 SCRIPTS  = BASE_DIR / "scripts"
 PYTHON   = sys.executable
 
+sys.path.insert(0, str(SCRIPTS))
+from paths import UPLOAD_DIR
+
 ENV_FILES = [BASE_DIR / "etoro.env", BASE_DIR / "t212.env"]
 
-UPLOAD_DEST   = Path(r"C:\Users\Neil\My Drive\Upload\macro_dashboard.html")
+UPLOAD_DEST   = UPLOAD_DIR / "macro_dashboard.html"
 HOMELAB_DEST  = BASE_DIR.parent / "Homelab" / "static-html" / "macro_dashboard.html"
 
 
