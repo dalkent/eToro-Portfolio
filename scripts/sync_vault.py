@@ -536,14 +536,23 @@ def parse_food_log(path: Path, days: int = 7) -> dict:
         }
         i = j
 
-    # Most recent N days with a totals row
+    # Most recent N days with a totals row (newest first — used by the
+    # "Last 7 Days" table card).
     sorted_days = sorted(days_data.keys(), reverse=True)[:days]
     recent = [days_data[d] for d in sorted_days]
+    # Full history: every day in the log that has a totals row, oldest→newest
+    # (chart-friendly shape). Days with no totals (e.g. just a stub) are
+    # filtered out so the chart doesn't render empty bars.
+    history = [
+        days_data[d] for d in sorted(days_data.keys())
+        if days_data[d].get("totals") is not None
+    ]
     today_key = date.today().isoformat()
     today_row = days_data.get(today_key, {"date": today_key, "totals": None, "has_log": False})
     return {
-        "today":  today_row,
-        "recent": recent,
+        "today":   today_row,
+        "recent":  recent,
+        "history": history,
         "targets": {
             "rest_day":    {"calories": 2100, "protein_g": 160, "carbs_g": 185, "fat_g": 65},
             "workout_day": {"calories": 2300, "protein_g": 160, "carbs_g": 215, "fat_g": 65},
