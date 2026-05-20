@@ -162,7 +162,25 @@ SKIP_FALLBACK_DCF_SECTORS = {"Basic Materials"}
 # depressed or doesn't capture the full distribution (e.g. Glencore pays in
 # USD special + base distributions that yfinance may underreport for .L tickers).
 # For these sectors, only EPV and primary-method DCF are used.
-SKIP_DDM_SECTORS = {"Basic Materials"}
+#
+# Energy added 2026-05-14: oil majors pay variable distributions linked to the
+# commodity cycle and run material buyback programmes (BP returns 30-40% of
+# operating cash flow split between dividend and buyback). A Gordon Growth
+# perpetual on the cash dividend overstates valuation when discount rates are
+# low and understates it when oil prices are above trend. EPV + DCF is the
+# honest blend for Capex cyclicals.
+SKIP_DDM_SECTORS = {"Basic Materials", "Energy"}
+
+# Sector-specific beta floor applied inside estimate_wacc. The global floor of
+# 0.5 produces implausibly low WACC for commodity cyclicals whose measured
+# beta runs negative on rolling 2-3yr windows (oil/index decoupling). Sector
+# beta convention puts energy and materials betas at 1.1-1.4 over long windows;
+# 1.10 is the conservative lower bound and keeps the model honest without
+# over-correcting. Added 2026-05-14.
+SECTOR_BETA_FLOOR = {
+    "Energy":           1.10,
+    "Basic Materials":  1.10,
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FINANCIAL-SECTOR MODEL FIX (2026-04-30)
@@ -203,6 +221,99 @@ BLEND_OVERRIDES = {
     "drop_dcf", "drop_ddm", "drop_epv",
     "dcf_only", "ddm_only", "epv_only",
 }
+
+# ── Non-financial archetype blend weights (2026-05-12 methodology overhaul) ────
+# Per-stock weights for DCF / DDM / EPV chosen ex-ante from the business
+# archetype. Replaces the equal-weight + outlier-drop blend that produced
+# boundary-instability in stocks where the three components disagreed widely
+# (e.g. KGF 2026-05-12, 427p → 216p on a 4% EPV move).
+#
+# Stock-to-archetype assignment lives in col O of the Tickers sheet
+# (Sub-Sector). Same column the financial sub-sector classification uses,
+# so the financial routing in the FINANCIAL SECTOR VALUATION MODELS branch
+# is unaffected. The non-financial branch checks the column AFTER the
+# financial-sector routes have already exited.
+NONFIN_ARCHETYPE_WEIGHTS = {
+    "Mature compounder": {"dcf": 0.50, "ddm": 0.20, "epv": 0.30},
+    "Mature cyclical":   {"dcf": 0.20, "ddm": 0.20, "epv": 0.60},
+    "Yield anchor":      {"dcf": 0.25, "ddm": 0.50, "epv": 0.25},
+    "Capex cyclical":    {"dcf": 0.50, "ddm": 0.25, "epv": 0.25},
+    "Restructuring":     {"dcf": 0.00, "ddm": 0.50, "epv": 0.50},
+}
+
+# Sector → default archetype map. Applied when a non-financial ticker has no
+# explicit Sub-Sector value on col O of the Tickers sheet. Explicit Sub-Sector
+# values always override the default. See vault:
+# Projects/eToro & Investing/Reference/2026-05-12 Sector Default Archetype Map.md
+# for the reasoning behind each default and the known-exception names.
+SECTOR_DEFAULT_ARCHETYPE = {
+    "Energy":                 "Capex cyclical",
+    "Basic Materials":        "Capex cyclical",
+    "Utilities":              "Yield anchor",
+    "Real Estate":            "Yield anchor",
+    "Communication Services": "Yield anchor",
+    "Consumer Defensive":     "Mature compounder",
+    "Healthcare":             "Mature compounder",
+    "Technology":             "Mature compounder",
+    "Consumer Cyclical":      "Mature cyclical",
+    "Industrials":            "Mature cyclical",
+}
+
+
+def apply_archetype_blend(dcf_v, ddm_v, epv_v, archetype: str) -> tuple:
+    """Return (blended_target, method_label) using per-archetype weights.
+
+    Excludes any component whose weight is zero (Restructuring drops DCF) or
+    whose value is NaN/non-positive. Remaining weights are renormalised to
+    sum to 1.0 so the blend is meaningful even when sector suppression has
+    killed a component.
+
+    Yield anchor archetype caps the DCF at 2x max(DDM, EPV). The dividend (DDM)
+    and steady-state earnings (EPV) define fair value for a yield name; the DCF
+    is a sanity check that should not lead. Without the cap, an outlying DCF
+    (e.g. IMB at 9065p vs DDM 3347p / EPV 2747p) would drag the blend well above
+    where the yield-anchor philosophy says fair value sits.
+
+    Returns (np.nan, "Archetype:{name}:NoData") if no usable component remains.
+    """
+    weights = NONFIN_ARCHETYPE_WEIGHTS.get(archetype)
+    if weights is None:
+        return np.nan, f"Archetype:{archetype}:Unknown"
+
+    # Yield-anchor DCF cap: clamp DCF to at most 2x the higher of DDM/EPV.
+    method_suffix = ""
+
+    def _valid(v):
+        return v is not None and not (isinstance(v, float) and np.isnan(v)) and v > 0
+
+    if archetype == "Yield anchor" and _valid(dcf_v):
+        anchor_candidates = [v for v in [ddm_v, epv_v] if _valid(v)]
+        if anchor_candidates:
+            anchor_max = max(anchor_candidates)
+            if dcf_v > 2 * anchor_max:
+                dcf_v = 2 * anchor_max
+                method_suffix = "+DCFcap2x"
+
+    components = [
+        ("dcf", dcf_v, weights["dcf"]),
+        ("ddm", ddm_v, weights["ddm"]),
+        ("epv", epv_v, weights["epv"]),
+    ]
+    usable = []
+    for name, val, w in components:
+        if w <= 0:
+            continue
+        if val is None or (isinstance(val, float) and np.isnan(val)) or val <= 0:
+            continue
+        usable.append((name, val, w))
+
+    if not usable:
+        return np.nan, f"Archetype:{archetype}:NoData"
+
+    total_weight = sum(w for _, _, w in usable)
+    blended = sum(val * w for _, val, w in usable) / total_weight
+    weight_str = "/".join(f"{n}:{w*100/total_weight:.0f}%" for n, _, w in usable)
+    return float(blended), f"Archetype:{archetype}({weight_str}){method_suffix}"
 
 # ── Read GBP/USD from Assumptions sheet ──────────────────────────────────────
 def read_gbp_usd(wb) -> float:
@@ -330,10 +441,19 @@ def epv_value(forward_eps: float, pe_multiple: float = PE_MULTIPLE) -> float:
     return np.nan
 
 # ── WACC estimate from beta ───────────────────────────────────────────────────
-def estimate_wacc(beta: float, is_ftse: bool) -> float:
+def estimate_wacc(beta: float, is_ftse: bool, sector: str | None = None) -> float:
+    """
+    CAPM-style WACC estimate. Beta is floored to prevent implausibly low discount
+    rates from negative or near-zero measured betas.
+
+    Sector-specific floors (Energy, Basic Materials) override the global 0.5
+    floor for commodity cyclicals whose measured beta is unstable. See
+    SECTOR_BETA_FLOOR comment for rationale. The cap at 2.5 is unchanged.
+    """
     rf   = 0.049 if is_ftse else 0.045  # UK 10yr / US 10yr (updated Q2 2026: US 10yr ~4.44%)
     erp  = 0.05                          # equity risk premium
-    wacc = rf + max(0.5, min(beta or 1.0, 2.5)) * erp
+    floor = SECTOR_BETA_FLOOR.get(sector or "", 0.5)
+    wacc = rf + max(floor, min(beta or 1.0, 2.5)) * erp
     return round(wacc, 4)
 
 # ── Cost of equity (Ke) — used for all financial sub-sectors ─────────────────
@@ -730,7 +850,7 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
     total_cash  = info.get("totalCash") or 0
     net_debt    = total_debt - total_cash
 
-    wacc = estimate_wacc(beta, is_ftse)
+    wacc = estimate_wacc(beta, is_ftse, sector)
     ke   = estimate_ke(beta, is_ftse)            # cost of equity for financial stocks
 
     # ── Determine if this is a financial sub-sector stock ─────────────────────
@@ -925,27 +1045,74 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
             if sector in SKIP_DDM_SECTORS:
                 ddm_val = np.nan
 
-            # Blend in GBP — outlier-remove symmetrically: drop values > 3× median or < median/3
-            vals = [v for v in [dcf_val_gbp, ddm_val, epv_val] if not np.isnan(v) and v > 0]
-            if vals:
-                if len(vals) > 1:
-                    med = float(np.median(vals))
-                    vals = [v for v in vals if (med / 3) <= v <= (med * 3)]
-                target = float(np.mean(vals)) if vals else (analyst_target or np.nan)
-            elif analyst_target:
-                target = analyst_target
-                fcf_method = "Analyst Consensus"
-            else:
-                target = np.nan
-                fcf_method = "No Valuation"
+            # ── Non-financial blend ───────────────────────────────────────────
+            # Resolution order:
+            #   1. Explicit Sub-Sector (col O) matching a non-fin archetype → use it.
+            #   2. Blank Sub-Sector but Sector matches SECTOR_DEFAULT_ARCHETYPE → use the default.
+            #   3. Otherwise → fall back to equal-weight + winsorise (the legacy default).
+            #
+            # Archetype weights are documented in NONFIN_ARCHETYPE_WEIGHTS and in
+            # vault: Projects/eToro & Investing/Reference/2026-05-12 Archetype
+            # Assignment Proposal.md and ...Sector Default Archetype Map.md.
+            archetype = row.get("sub_sector", "")
+            archetype_source = "explicit"
+            if not (archetype and archetype in NONFIN_ARCHETYPE_WEIGHTS):
+                sector_default = SECTOR_DEFAULT_ARCHETYPE.get(sector, "")
+                if sector_default:
+                    archetype = sector_default
+                    archetype_source = "sector-default"
+                else:
+                    archetype = ""
 
-            # ── Apply Blend Override from Tickers!P (2026-04-30 fix) ──────────
-            # Replaces site-repo blend_overrides.json. Spreadsheet is now SoT.
+            if archetype and archetype in NONFIN_ARCHETYPE_WEIGHTS:
+                target, fcf_method_label = apply_archetype_blend(
+                    dcf_val_gbp, ddm_val, epv_val, archetype
+                )
+                if archetype_source == "sector-default":
+                    fcf_method_label = f"{fcf_method_label}[sector-default]"
+                if np.isnan(target) and analyst_target:
+                    target = analyst_target
+                    fcf_method = "Analyst Consensus"
+                elif np.isnan(target):
+                    fcf_method = "No Valuation"
+                else:
+                    fcf_method = fcf_method_label
+            else:
+                # Default path: winsorise outliers (clamp at median*3 / median/3)
+                # rather than dropping them. Dropping caused boundary instability
+                # (KGF 2026-05-12: 427p → 216p on unchanged components). The
+                # winsorised mean is what unclassified tickers use until the
+                # archetype framework is extended to the wider universe.
+                vals = [v for v in [dcf_val_gbp, ddm_val, epv_val]
+                        if not np.isnan(v) and v > 0]
+                if vals:
+                    if len(vals) > 1:
+                        med = float(np.median(vals))
+                        upper, lower = med * 3, med / 3
+                        vals = [min(max(v, lower), upper) for v in vals]
+                    target = float(np.mean(vals))
+                elif analyst_target:
+                    target = analyst_target
+                    fcf_method = "Analyst Consensus"
+                else:
+                    target = np.nan
+                    fcf_method = "No Valuation"
+
+            # ── Apply Blend Override from Tickers!P (legacy, 2026-04-30) ──────
+            # Per-stock subset switches (drop_dcf, ddm_only, etc). Retained for
+            # backward compatibility with tickers that have an override set but
+            # not yet been moved to the archetype framework. If both an archetype
+            # AND an override are present, the archetype wins and the override
+            # is logged as ignored.
             override = row.get("blend_override", "")
             if override and target is not None and not np.isnan(target):
-                target, fcf_method = apply_blend_override(
-                    target, override, dcf_val_gbp, ddm_val, epv_val, fcf_method
-                )
+                if archetype and archetype in NONFIN_ARCHETYPE_WEIGHTS:
+                    log(f"  {row.get('yf_ticker', '?')}: Blend Override "
+                        f"'{override}' ignored (archetype '{archetype}' takes precedence)")
+                else:
+                    target, fcf_method = apply_blend_override(
+                        target, override, dcf_val_gbp, ddm_val, epv_val, fcf_method
+                    )
 
             def clean_gbp(v):
                 return round(float(v), 4) if v is not None and not np.isnan(v) and v > 0 else None
@@ -957,14 +1124,17 @@ def value_ticker(row: dict, gbp_usd: float, eur_gbp: float = EUR_GBP) -> dict | 
             out_currency = "GBP"
 
         else:
-            # Non-FTSE: all metrics in USD — only the shares bug fix above was needed
+            # Non-FTSE: all metrics in USD — only the shares bug fix above was needed.
+            # Winsorise outliers (mirroring the FTSE branch) instead of dropping them,
+            # so the blend is stable across the 3x boundary.
             analyst_target = analyst_target_raw
             vals = [v for v in [dcf_val, ddm_val, epv_val] if not np.isnan(v) and v > 0]
             if vals:
                 if len(vals) > 1:
                     med = float(np.median(vals))
-                    vals = [v for v in vals if v <= med * 3]
-                target = float(np.mean(vals)) if vals else (analyst_target or np.nan)
+                    upper, lower = med * 3, med / 3
+                    vals = [min(max(v, lower), upper) for v in vals]
+                target = float(np.mean(vals))
             elif analyst_target:
                 target = analyst_target
                 fcf_method = "Analyst Consensus"
