@@ -154,6 +154,54 @@ def parse_body_comp(path: Path) -> dict:
     }
 
 
+# ── Metabolic anchors (TDEE, BMR) from latest Health Report ─────────────────
+
+def parse_latest_metabolic(reports_dir: Path) -> dict:
+    """Walk Health Reports newest→oldest and return the first observed
+    TDEE / BMR pair plus its source date.
+
+    Targets the 'Additional data:' line in each report, e.g.:
+        *Additional data: ... · BMR 1,645 kcal · TDEE 2,705 kcal · ...*
+
+    Not every scan captures TDEE/BMR (some Boditrax sessions skip them), so
+    the latest report may not have them — fall back through history.
+    """
+    if not reports_dir.exists() or not reports_dir.is_dir():
+        return {}
+    files = sorted(
+        [p for p in reports_dir.iterdir() if p.suffix.lower() == ".md"],
+        reverse=True,
+    )
+    tdee_rx = re.compile(r"TDEE\s+([0-9,]+)\s*kcal", re.IGNORECASE)
+    bmr_rx  = re.compile(r"BMR\s+([0-9,]+)\s*kcal",  re.IGNORECASE)
+    date_rx = re.compile(r"(\d{4}-\d{2}-\d{2})")
+    out: dict = {}
+    for fp in files:
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if "tdee" not in text.lower():
+            continue
+        m_t = tdee_rx.search(text)
+        if not m_t:
+            continue
+        m_b = bmr_rx.search(text)
+        m_d = date_rx.search(fp.name) or date_rx.search(text[:300])
+        try:
+            tdee = int(m_t.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        out = {
+            "tdee_kcal": tdee,
+            "bmr_kcal":  int(m_b.group(1).replace(",", "")) if m_b else None,
+            "source_date": m_d.group(1) if m_d else None,
+            "source_file": fp.name,
+        }
+        break
+    return out
+
+
 # ── Daily activity (steps) ──────────────────────────────────────────────────
 
 def parse_daily_activity(path: Path) -> dict:
@@ -704,6 +752,7 @@ def main() -> None:
         "goals":          parse_goals(vault_root / "Goals.md"),
         "calisthenics":   parse_calisthenics_goals(health / "Calisthenics Goals.md"),
         "activity":       parse_daily_activity(health / "Daily Activity Log.md"),
+        "metabolic":      parse_latest_metabolic(health / "Health Reports"),
         "latest_report":  parse_latest_health_report(health / "Health Reports"),
     }
     out = DATA_DIR / "health.json"
