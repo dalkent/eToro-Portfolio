@@ -154,6 +154,104 @@ def parse_body_comp(path: Path) -> dict:
     }
 
 
+# ── Daily activity (steps) ──────────────────────────────────────────────────
+
+def parse_daily_activity(path: Path) -> dict:
+    """Parse `Daily Activity Log.md` for per-day step counts.
+
+    Reads every markdown table in the file (recent block, full history block,
+    etc.) and merges rows on date. A row with `TBD` or blank steps is skipped.
+    Estimated values (suffixed with `*`) are kept but flagged. Summary rows
+    like '9-day total' / '9-day average' are filtered out by failing the date
+    regex.
+
+    Returns:
+      {
+        "latest": {"date": "...", "steps": N, "estimated": bool},
+        "history": [{"date": "...", "steps": N, "estimated": bool}, ...],
+        "rolling_7d_avg_latest": N,
+        "rolling_7d": [{"date": "...", "value": N}, ...],  # parallel to history
+        "all_time": {"count": N, "total": N, "avg": N},
+        "goal_daily": 10000,
+      }
+    """
+    if not path.exists():
+        return {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+
+    # Walk the file finding every table; collect step rows across all of them.
+    by_date: dict[str, dict] = {}
+    i = 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith("|") and i + 1 < len(lines) and "---" in lines[i + 1]:
+            headers, rows = _parse_table(lines, i)
+            # Find the Date and Steps columns (case-insensitive, allow trailing words)
+            h_lower = [h.lower() for h in headers]
+            date_col  = next((k for k, h in enumerate(h_lower) if h.startswith("date")), None)
+            steps_col = next((k for k, h in enumerate(h_lower) if "step" in h), None)
+            if date_col is not None and steps_col is not None:
+                for row in rows:
+                    if len(row) <= max(date_col, steps_col):
+                        continue
+                    raw_date = row[date_col]
+                    # Strip parenthetical day-of-week and bold markers: "2026-05-19 (Tue)"
+                    m = re.search(r"\d{4}-\d{2}-\d{2}", raw_date)
+                    if not m:
+                        continue  # skips '**9-day total**' etc.
+                    iso = m.group(0)
+                    raw_steps = row[steps_col].strip()
+                    if not raw_steps or raw_steps.upper() == "TBD":
+                        continue
+                    estimated = raw_steps.endswith("*")
+                    digits = re.sub(r"[^0-9]", "", raw_steps)
+                    if not digits:
+                        continue
+                    try:
+                        steps = int(digits)
+                    except ValueError:
+                        continue
+                    # Most-recent wins if the same date appears in multiple tables
+                    # (recent block overrides full history).
+                    by_date[iso] = {"date": iso, "steps": steps, "estimated": estimated}
+            # Skip past this table
+            j = i + 2
+            while j < len(lines) and lines[j].lstrip().startswith("|"):
+                j += 1
+            i = j
+        else:
+            i += 1
+
+    if not by_date:
+        return {}
+
+    history = sorted(by_date.values(), key=lambda e: e["date"])
+
+    # 7-day trailing rolling average parallel to history (one entry per row).
+    rolling: list[dict] = []
+    from collections import deque
+    window: deque[int] = deque(maxlen=7)
+    for entry in history:
+        window.append(entry["steps"])
+        rolling.append({
+            "date":  entry["date"],
+            "value": round(sum(window) / len(window)),
+        })
+
+    total = sum(e["steps"] for e in history)
+    return {
+        "latest":                history[-1],
+        "history":               history,
+        "rolling_7d":            rolling,
+        "rolling_7d_avg_latest": rolling[-1]["value"] if rolling else None,
+        "all_time": {
+            "count": len(history),
+            "total": total,
+            "avg":   round(total / len(history)),
+        },
+        "goal_daily": 10000,
+    }
+
+
 # ── Personal bests ───────────────────────────────────────────────────────────
 
 def _pb_best_row(text: str) -> dict:
@@ -605,6 +703,7 @@ def main() -> None:
         "food":           parse_food_log(health / "Food Log.md"),
         "goals":          parse_goals(vault_root / "Goals.md"),
         "calisthenics":   parse_calisthenics_goals(health / "Calisthenics Goals.md"),
+        "activity":       parse_daily_activity(health / "Daily Activity Log.md"),
         "latest_report":  parse_latest_health_report(health / "Health Reports"),
     }
     out = DATA_DIR / "health.json"
