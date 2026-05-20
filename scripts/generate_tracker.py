@@ -36,9 +36,13 @@ MASTER      = DATA_DIR / "eToro_Master.xlsx"
 # signal changes. The Assumptions sheet's prev_signal/curr_signal columns are static
 # and never updated, so they cannot be used for week-on-week comparisons.
 SIGNAL_HISTORY = DATA_DIR / "signal_history.json"
-# Vault Drafts folder — was previously broken (resolved to a phantom path under
-# ClaudeCode\eToro & Investing\). Now points at the real Obsidian vault.
-VAULT_ROOT  = Path(os.environ.get("VAULT_ROOT", r"C:\Users\Neil\My Drive\Daley's Brain"))
+
+# Cross-platform path resolution via paths.py. VAULT_ROOT and SITE_REPO env
+# vars still win if set explicitly.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import VAULT_DIR as _PATHS_VAULT_DIR, SITE_REPO as _PATHS_SITE_REPO  # noqa: E402
+
+VAULT_ROOT  = Path(os.environ.get("VAULT_ROOT", str(_PATHS_VAULT_DIR)))
 DRAFTS_DIR  = VAULT_ROOT / "Projects" / "eToro & Investing" / "Drafts"
 
 # Mirror the public-site filter from daleyvaluations-site/scripts/build_site.py
@@ -49,7 +53,7 @@ EXCLUDED_TICKERS = {"PSH.L", "III.L"}
 # website see IDENTICAL prices on any given run. The site's build_site.py also
 # reads/writes this file with TTL=1h. Whichever runs first does the live fetch;
 # the other consumes the cache.
-SITE_REPO        = Path(r"C:\Users\Neil\ClaudeCode\daleyvaluations-site")
+SITE_REPO        = Path(os.environ.get("SITE_REPO", str(_PATHS_SITE_REPO)))
 PRICE_CACHE_FILE = SITE_REPO / ".price_cache.json"
 PRICE_CACHE_TTL  = 60  # minutes — must match build_site.py's PRICE_CACHE_TTL_HOURS=1
 

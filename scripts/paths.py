@@ -31,6 +31,12 @@ UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR",  str(DRIVE_DIR / "Upload")))
 SYNC_DIR   = Path(os.environ.get("SYNC_DIR",    str(DRIVE_DIR / "eToro Sync")))
 VAULT_DIR  = Path(os.environ.get("VAULT_ROOT",  str(DRIVE_DIR / "Daley's Brain")))
 
+# Sibling repo for the public site (daleyvaluations-site). Lives next to the
+# eToro repo on both machines (~/ClaudeCode/daleyvaluations-site on Mac,
+# C:\Users\Neil\ClaudeCode\daleyvaluations-site on Windows). Override via
+# SITE_REPO env var if it's somewhere else.
+SITE_REPO = Path(os.environ.get("SITE_REPO", str(REPO_DIR.parent / "daleyvaluations-site")))
+
 DATA_DIR       = REPO_DIR / "data"
 DASHBOARDS_DIR = REPO_DIR / "dashboards"
 SCRIPTS_DIR    = REPO_DIR / "scripts"
@@ -41,6 +47,7 @@ def diagnostic():
     print(f"UPLOAD_DIR     = {UPLOAD_DIR}    exists={UPLOAD_DIR.exists()}")
     print(f"SYNC_DIR       = {SYNC_DIR}      exists={SYNC_DIR.exists()}")
     print(f"VAULT_DIR      = {VAULT_DIR}     exists={VAULT_DIR.exists()}")
+    print(f"SITE_REPO      = {SITE_REPO}     exists={SITE_REPO.exists()}")
     print(f"DATA_DIR       = {DATA_DIR}      exists={DATA_DIR.exists()}")
     print(f"DASHBOARDS_DIR = {DASHBOARDS_DIR} exists={DASHBOARDS_DIR.exists()}")
 
