@@ -32,6 +32,10 @@ import openpyxl
 BASE_DIR    = Path(__file__).parent.parent
 DATA_DIR    = BASE_DIR / "data"
 MASTER      = DATA_DIR / "eToro_Master.xlsx"
+# Per-ticker computed_signal snapshots by date. Used to detect real week-over-week
+# signal changes. The Assumptions sheet's prev_signal/curr_signal columns are static
+# and never updated, so they cannot be used for week-on-week comparisons.
+SIGNAL_HISTORY = DATA_DIR / "signal_history.json"
 # Vault Drafts folder — was previously broken (resolved to a phantom path under
 # ClaudeCode\eToro & Investing\). Now points at the real Obsidian vault.
 VAULT_ROOT  = Path(os.environ.get("VAULT_ROOT", r"C:\Users\Neil\My Drive\Daley's Brain"))
@@ -418,6 +422,41 @@ def fmt_signal(sig):
     return sig or "N/A"
 
 
+def _load_prior_snapshot(today: date):
+    """Return (prior_date_str, {ticker: signal}) for the most recent snapshot
+    strictly before `today`, or (None, {}) if none exists.
+    """
+    import json as _json
+    if not SIGNAL_HISTORY.exists():
+        return None, {}
+    try:
+        data = _json.loads(SIGNAL_HISTORY.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARNING: could not read signal_history.json ({e}) - no prior snapshot")
+        return None, {}
+    snaps = data.get("snapshots") or {}
+    today_iso = today.isoformat()
+    prior_dates = sorted([d for d in snaps.keys() if d < today_iso])
+    if not prior_dates:
+        return None, {}
+    chosen = prior_dates[-1]
+    return chosen, snaps[chosen]
+
+
+def _save_snapshot(today: date, ticker_signals: dict):
+    """Persist today's {ticker: computed_signal} snapshot into signal_history.json."""
+    import json as _json
+    data = {"snapshots": {}}
+    if SIGNAL_HISTORY.exists():
+        try:
+            data = _json.loads(SIGNAL_HISTORY.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {"snapshots": {}}
+    data.setdefault("snapshots", {})
+    data["snapshots"][today.isoformat()] = ticker_signals
+    SIGNAL_HISTORY.write_text(_json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def generate_markdown(stocks, tracker_date):
     """Generate the full Substack article as markdown."""
     lines = []
@@ -431,10 +470,22 @@ def generate_markdown(stocks, tracker_date):
     portfolio = [s for s in valid if s["in_portfolio"]]
     non_portfolio = [s for s in valid if not s["in_portfolio"]]
 
-    # Signal changes
-    changes = [s for s in valid if s["prev_signal"] and s["curr_signal"]
-               and s["prev_signal"] != s["curr_signal"]
-               and s["prev_signal"] not in ("No Signal", "N/A", "")]
+    # Signal changes - compare today's computed_signal against the most recent
+    # snapshot in signal_history.json (NOT the static prev/curr columns).
+    prior_date, prior_signals = _load_prior_snapshot(tracker_date)
+    changes = []
+    if prior_signals:
+        for s in valid:
+            prev = prior_signals.get(s["ticker"])
+            curr = s["computed_signal"]
+            if prev and curr and prev != curr and prev not in ("No Signal", "N/A", ""):
+                # Attach the prev signal so downstream rendering can use it
+                s_copy = dict(s)
+                s_copy["prev_signal_real"] = prev
+                changes.append(s_copy)
+        print(f"  Detected {len(changes)} signal change(s) vs snapshot {prior_date}")
+    else:
+        print(f"  No prior snapshot available - skipping signal-change detection")
 
     # Counts
     strong_buys = [s for s in valid if s["computed_signal"] == "Strong Buy"]
@@ -474,7 +525,7 @@ def generate_markdown(stocks, tracker_date):
     w(f"- **{len(changes)} signal change{'s' if len(changes) != 1 else ''}** this week")
     if changes:
         for c in changes:
-            w(f"  - {c['company']} ({c['ticker']}): {c['prev_signal']} -> {c['curr_signal']}")
+            w(f"  - {c['company']} ({c['ticker']}): {c['prev_signal_real']} -> {c['computed_signal']}")
     w(f"- **{len(strong_buys)} Strong Buy** signals across the FTSE universe")
     w(f"- **{len(strong_sells)} Strong Sell** signals - names my models say are overvalued")
     w("")
@@ -489,7 +540,7 @@ def generate_markdown(stocks, tracker_date):
         w("|---|---|---|---|---|---|---|---|")
         for c in sorted(changes, key=lambda x: SIGNAL_ORDER.get(x["computed_signal"], 9)):
             w(f"| {c['company']} | {c['ticker']} | {c['sector']} | "
-              f"{fmt_signal(c['prev_signal'])} | {fmt_signal(c['curr_signal'])} | "
+              f"{fmt_signal(c['prev_signal_real'])} | {fmt_signal(c['computed_signal'])} | "
               f"{fmt_price(c['blended_p'])} | {fmt_price(c['live_price_p'])} | {fmt_vr(c['value_ratio'])} |")
     else:
         w("No signal changes this week. All valuations stable at current prices.")
@@ -691,7 +742,18 @@ def main():
     output_path = DRAFTS_DIR / filename
     output_path.write_text(md, encoding="utf-8")
     print(f"\nTracker written to: {output_path}")
-    print(f"  Signal changes: {sum(1 for s in stocks if s.get('prev_signal') and s.get('curr_signal') and s['prev_signal'] != s['curr_signal'] and s['prev_signal'] not in ('No Signal', 'N/A', ''))}")
+
+    # Persist today's computed_signal per ticker for next week's diff.
+    # Use the SAME "valid" filter generate_markdown uses, so snapshots are clean.
+    today_snapshot = {
+        s["ticker"]: s["computed_signal"]
+        for s in stocks
+        if s.get("computed_signal") not in ("N/A", "No Signal", "", None)
+        and s.get("model", "") not in ("No Valuation",)
+        and (s.get("value_ratio") is None or s.get("value_ratio", 0) < 10)
+    }
+    _save_snapshot(tracker_date, today_snapshot)
+    print(f"  Snapshot saved: {len(today_snapshot)} tickers -> signal_history.json")
     # Full signal-mix breakdown — should match daleyvaluations.com exactly when
     # loaded via load_via_site (the default path).
     from collections import Counter as _Counter

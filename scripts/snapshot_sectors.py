@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import json
 import os
 import statistics
 import sys
@@ -37,7 +38,9 @@ from pathlib import Path
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl not installed. Run: pip install openpyxl --break-system-packages")
+    # openpyxl is only required by the xlsx fallback path; the primary JSON path
+    # works without it.
+    openpyxl = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,7 @@ HISTORY_DIR = DATA_DIR / "sector_history"
 SECTOR_HISTORY_CSV = HISTORY_DIR / "sector_history.csv"
 PER_STOCK_HISTORY_CSV = HISTORY_DIR / "per_stock_history.csv"
 
+LIVE_JSON = DATA_DIR / "etoro_master.json"
 LIVE_XLSX = DATA_DIR / "eToro_Master.xlsx"
 BAK_GLOB = str(DATA_DIR / "eToro_Master.bak-*.xlsx")
 
@@ -84,8 +88,38 @@ def is_valid_xlsx(path: Path) -> bool:
         return False
 
 
+def _load_json_robust(path: Path) -> dict:
+    """Parse etoro_master.json, tolerating trailing null bytes / extra data from
+    older non-atomic writes. Mirrors the raw_decode approach used by build_site.py."""
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        d, _ = decoder.raw_decode(raw)
+        return d
+
+
+def is_valid_json(path: Path) -> bool:
+    try:
+        _load_json_robust(path)
+        return True
+    except Exception:
+        return False
+
+
 def pick_source_file() -> Path:
-    """Use live file if valid; otherwise fall back to most recent .bak."""
+    """Prefer the canonical JSON; fall back to live xlsx; then most recent .bak."""
+    if LIVE_JSON.exists() and is_valid_json(LIVE_JSON):
+        return LIVE_JSON
+    if LIVE_JSON.exists():
+        print(f"WARN: {LIVE_JSON.name} is corrupt, falling back to xlsx")
+    else:
+        print(f"WARN: {LIVE_JSON.name} not found, falling back to xlsx")
+    if openpyxl is None:
+        sys.exit("ERROR: JSON unavailable and openpyxl not installed. "
+                 "Run: pip install openpyxl --break-system-packages")
     if LIVE_XLSX.exists() and is_valid_xlsx(LIVE_XLSX):
         return LIVE_XLSX
     print(f"WARN: {LIVE_XLSX.name} is missing or corrupt, falling back to backup")
@@ -95,15 +129,55 @@ def pick_source_file() -> Path:
         if is_valid_xlsx(p):
             print(f"  using: {p.name}")
             return p
-    sys.exit("ERROR: No valid eToro_Master.xlsx or .bak-*.xlsx found")
+    sys.exit("ERROR: No valid etoro_master.json, eToro_Master.xlsx, or .bak-*.xlsx found")
 
 
 # ---------------------------------------------------------------------------
 # Spreadsheet extraction
 # ---------------------------------------------------------------------------
-def extract_rows(xlsx_path: Path) -> list[dict]:
-    """Return every covered stock from Portfolio + Watchlist sheets, with sector,
-    value ratio, and signal."""
+def _extract_rows_from_json(json_path: Path) -> list[dict]:
+    """Read Portfolio + Watchlist from etoro_master.json. Output shape matches
+    the xlsx extractor."""
+    data = _load_json_robust(json_path)
+    sheets = data.get("sheets", {})
+    out: list[dict] = []
+    for obj in sheets.get("portfolio", {}).get("objects", []):
+        ticker = (obj.get("eToro Ticker") or "").strip()
+        if not ticker:
+            continue
+        out.append({
+            "ticker": ticker,
+            "name":   obj.get("Company Name") or "",
+            "sector": obj.get("Sector") or "",
+            "value_ratio": obj.get("Value Ratio"),
+            "signal": obj.get("Signal"),
+        })
+    for obj in sheets.get("watchlist", {}).get("objects", []):
+        ticker = (obj.get("eToro Ticker") or "").strip()
+        if not ticker:
+            continue
+        out.append({
+            "ticker": ticker,
+            "name":   obj.get("Company / Name") or "",
+            "sector": obj.get("Sector") or "",
+            "value_ratio": obj.get("Value Ratio"),
+            "signal": obj.get("Signal"),
+        })
+    # Coerce value_ratio strings to floats where possible (JSON cache stringifies numerics)
+    for r in out:
+        vr = r["value_ratio"]
+        if isinstance(vr, str):
+            try:
+                r["value_ratio"] = float(vr.replace(",", ""))
+            except ValueError:
+                r["value_ratio"] = None
+    return out
+
+
+def _extract_rows_from_xlsx(xlsx_path: Path) -> list[dict]:
+    """Fallback xlsx reader. Only used when the JSON cache is unavailable."""
+    if openpyxl is None:
+        sys.exit("openpyxl not installed and JSON unavailable. Run: pip install openpyxl")
     wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
 
     out: list[dict] = []
@@ -139,6 +213,13 @@ def extract_rows(xlsx_path: Path) -> list[dict]:
             })
     wb.close()
     return out
+
+
+def extract_rows(source_path: Path) -> list[dict]:
+    """Dispatch to JSON or xlsx extractor based on file extension."""
+    if source_path.suffix.lower() == ".json":
+        return _extract_rows_from_json(source_path)
+    return _extract_rows_from_xlsx(source_path)
 
 
 def is_usable(r: dict) -> bool:

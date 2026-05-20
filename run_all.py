@@ -32,7 +32,7 @@ SCRIPTS  = BASE_DIR / "scripts"
 PYTHON   = sys.executable
 
 sys.path.insert(0, str(SCRIPTS))
-from paths import UPLOAD_DIR, SYNC_DIR
+from paths import UPLOAD_DIR
 
 
 def load_env(path: Path):
@@ -73,6 +73,9 @@ def main():
     load_env(ENV_FILE)
 
     if not args.dash:
+        # Backup BEFORE any write to the xlsx, so a corrupted save can be rolled back.
+        run("Step 0 — Backing up xlsx + json (rolling 14-day) ...", SCRIPTS / "backup_xlsx.py")
+
         if not args.no_sync:
             run("Step 1/3 — Syncing portfolio from eToro API ...", SCRIPTS / "sync_portfolio.py")
         else:
@@ -102,18 +105,17 @@ def main():
     else:
         print("\n  WARNING: eToro_dashboard.html not found — check for errors above")
 
-    # ── Mirror the freshly-revalued workbook to Drive so the Mac can pick it up.
-    # PC is the data master; Mac is read-only on the xlsx.
-    import shutil as _sh
-    src_xlsx = BASE_DIR / "data" / "eToro_Master.xlsx"
-    drive_xlsx = SYNC_DIR / "eToro_Master.xlsx"
-    if src_xlsx.exists():
-        try:
-            drive_xlsx.parent.mkdir(parents=True, exist_ok=True)
-            _sh.copy2(str(src_xlsx), str(drive_xlsx))
-            print(f"  Mirrored xlsx to Drive -> {drive_xlsx}")
-        except Exception as e:
-            print(f"  WARNING: could not mirror xlsx to Drive — {e}")
+    # ── Mirror data + source-HTML shells to Google Drive eToro Sync.
+    # Delegated to scripts/mirror_to_drive.py so every BAT/runner uses the same
+    # logic. PC is the data master; Mac and other consumers read from Drive.
+    # mirror_to_drive resolves the drive path via paths.py, so this works on
+    # both Windows and macOS.
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Mirroring to Google Drive eToro Sync ...")
+    try:
+        import mirror_to_drive  # type: ignore
+        mirror_to_drive.mirror(quiet=False)
+    except Exception as e:
+        print(f"  WARNING: mirror_to_drive failed - {e}")
 
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Done.\n")
 

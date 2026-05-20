@@ -11,7 +11,15 @@ Trigger whenever the user says something like:
 ---
 
 ## Data File
-**Master Excel:** `/sessions/funny-serene-carson/mnt/eToro/data/eToro_Master.xlsx`
+
+**Canonical source: JSON** — `C:\Users\Neil\My Drive\eToro Sync\etoro_master.json`
+
+Use this first. It's atomic, parses cleanly, and is the same source the website
+and tracker read from. The Excel `eToro_Master.xlsx` is the upstream input that
+`valuation.py` writes into; downstream readers (this skill included) should not
+read the xlsx directly unless the JSON is unavailable.
+
+**Fallback (rare):** `C:\Users\Neil\ClaudeCode\eToro\data\eToro_Master.xlsx`
 
 ---
 
@@ -22,8 +30,30 @@ Extract two things:
 - **Company / Ticker**: The stock they named (e.g., "Lloyds", "LLOY.L", "Rolls Royce")
 - **Action**: Buy or Sell
 
-### Step 2 — Read the Excel File
-Use Python with `openpyxl` (`data_only=True`) to read `eToro_Master.xlsx`.
+### Step 2 — Read the data
+
+Preferred: parse the JSON.
+
+```python
+import json
+with open(r"C:\Users\Neil\My Drive\eToro Sync\etoro_master.json", encoding="utf-8") as f:
+    raw = f.read()
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    # Tolerate trailing junk from older non-atomic writes
+    data = json.JSONDecoder().raw_decode(raw)[0]
+
+# Per-ticker valuations (replaces the Assumptions sheet read below):
+valuations = data["assumptions"]["valuations"]
+# Portfolio rows (replaces the Portfolio sheet read below):
+portfolio = data["sheets"]["portfolio"]["objects"]
+# Watchlist rows (replaces the Watchlist sheet read below):
+watchlist = data["sheets"]["watchlist"]["objects"]
+```
+
+Fallback only when the JSON cache is missing or corrupt: use Python with `openpyxl`
+(`data_only=True`) to read `eToro_Master.xlsx` per the column maps below.
 
 **Assumptions tab** (header row = Row 7, data starts Row 8):
 ```
@@ -234,12 +264,16 @@ Copy these exactly into the report — do not re-process them:
 
 ---
 
-## Python Snippet for Reading Data
+## Python Snippet for Reading Data (xlsx fallback only)
+
+Prefer the JSON snippet in Step 2 above. The xlsx code below is for when the
+JSON cache is unavailable.
+
 ```python
 import openpyxl
 
 wb = openpyxl.load_workbook(
-    '/sessions/funny-serene-carson/mnt/eToro/data/eToro_Master.xlsx',
+    r"C:\Users\Neil\ClaudeCode\eToro\data\eToro_Master.xlsx",
     data_only=True
 )
 

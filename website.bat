@@ -65,19 +65,30 @@ echo ============================================================
 REM ---- Step A: optional revalue ----
 if %REVALUE%==1 (
     echo.
-    echo [A] Re-running valuations + JSON export...
+    echo [A0] Backing up xlsx + json (rolling 14-day)...
     pushd "%ETORO_DIR%"
+    "%PYTHON%" scripts\backup_xlsx.py
+    echo.
+    echo [A1] Re-running valuations...
     "%PYTHON%" scripts\valuation.py
     if errorlevel 1 (
         popd
         echo ERROR: valuation.py failed.
         exit /b 1
     )
+    echo.
+    echo [A2] Exporting xlsx -^> JSON cache (atomic write)...
     "%PYTHON%" scripts\sync_xlsx_to_vault.py
     if errorlevel 1 (
         popd
         echo ERROR: sync_xlsx_to_vault.py failed.
         exit /b 1
+    )
+    echo.
+    echo [A3] Mirroring fresh files to Google Drive eToro Sync...
+    "%PYTHON%" scripts\mirror_to_drive.py
+    if errorlevel 1 (
+        echo WARNING: mirror_to_drive.py failed - Drive may be stale until next run.
     )
     popd
 )

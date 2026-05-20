@@ -247,10 +247,30 @@ def main() -> None:
         out_path.write_text(md, encoding="utf-8")
         print(f"  wrote {out_path.name}  ({len(data) if sheet_name != 'Assumptions' else len(cache['assumptions'])} rows)")
 
-    # JSON cache for dashboard consumers
+    # JSON cache for dashboard consumers - atomic write:
+    #   1. serialise to a string
+    #   2. validate the string round-trips through json.loads (catches partial dumps)
+    #   3. write to a .tmp file in the same directory
+    #   4. os.replace the .tmp over the live file (atomic on POSIX & Windows)
+    # This prevents the silent-truncation bug where a killed process leaves a
+    # half-written JSON that build_site.py then "repairs" with stale data.
+    import os as _os
     json_path = DATA_DIR / "etoro_master.json"
-    json_path.write_text(json.dumps(cache, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
-    print(f"  wrote {json_path}")
+    tmp_path = json_path.with_suffix(".json.tmp")
+    payload = json.dumps(cache, indent=2, default=str, ensure_ascii=False)
+    try:
+        json.loads(payload)  # sanity check before we touch the live file
+    except json.JSONDecodeError as e:
+        sys.exit(f"ERROR: built JSON failed self-validation ({e}). Live file left untouched at {json_path}.")
+    tmp_path.write_text(payload, encoding="utf-8")
+    # round-trip the file we just wrote, in case the disk wrote a short version
+    try:
+        with open(tmp_path, encoding="utf-8") as _f:
+            json.load(_f)
+    except json.JSONDecodeError as e:
+        sys.exit(f"ERROR: tmp JSON at {tmp_path} failed re-parse ({e}). Live file left untouched.")
+    _os.replace(str(tmp_path), str(json_path))
+    print(f"  wrote {json_path}  ({len(payload):,} chars, atomically replaced)")
 
 
 if __name__ == "__main__":

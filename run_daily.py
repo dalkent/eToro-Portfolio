@@ -2,14 +2,21 @@
 """
 run_daily.py
 ────────────
-Daily runner — refreshes Yahoo Finance valuations for all tickers in
-the Tickers sheet and updates eToro_Master.xlsx Assumptions tab.
+Daily / hourly runner. Refreshes valuations, regenerates the JSON cache, and
+mirrors fresh files to Google Drive eToro Sync so every consumer (website,
+tracker, dashboards, Mac) sees up-to-date data.
 
 Steps:
-  1. valuation.py  — fetches prices, runs DCF/DDM/EPV for every ticker
-                     in the Tickers sheet (FTSE + international),
-                     writes results to Assumptions and saves
-                     reports/ftse_report.csv + reports/intl_report.csv
+  1. valuation.py            - fetches prices, runs DCF/DDM/EPV for every
+                               ticker in the Tickers sheet, writes results to
+                               eToro_Master.xlsx Assumptions, saves
+                               reports/ftse_report.csv + reports/intl_report.csv.
+  2. sync_xlsx_to_vault.py   - exports xlsx -> data/etoro_master.json (atomic
+                               write, validated). The JSON is the canonical
+                               source of truth for every downstream reader.
+  3. mirror_to_drive.py      - copies xlsx + json + dashboard shells to
+                               C:\\Users\\Neil\\My Drive\\eToro Sync\\ so the
+                               Mac and other consumers see fresh data.
 """
 
 import os
@@ -46,9 +53,22 @@ def run(script: str):
     result = subprocess.run([PYTHON, str(BASE_DIR / "scripts" / script)], **kwargs)
     if result.returncode != 0:
         print(f"WARNING: {script} exited with code {result.returncode}")
+    return result.returncode
 
 if __name__ == "__main__":
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Daily run starting...")
     load_env(ENV_FILE)
+
+    # 0) snapshot current xlsx + json BEFORE anything writes (safety net)
+    run("backup_xlsx.py")
+
+    # 1) valuations (writes the xlsx)
     run("valuation.py")
+
+    # 2) regenerate JSON from xlsx (atomic write, validated)
+    run("sync_xlsx_to_vault.py")
+
+    # 3) mirror fresh files to Google Drive eToro Sync (xlsx, json, shells)
+    run("mirror_to_drive.py")
+
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Daily run complete.")
